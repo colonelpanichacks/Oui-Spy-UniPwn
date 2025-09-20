@@ -1,6 +1,6 @@
 /*
  * ESP32-S3 Unitree Robot BLE Exploit Tool
- * Based on UniPwn research by Bin4ry and h0stile
+
  * 
  * This tool exploits the BLE WiFi configuration vulnerability
  * in Unitree robots (Go2, G1, H1, B2 series)
