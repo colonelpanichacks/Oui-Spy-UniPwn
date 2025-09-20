@@ -1,6 +1,6 @@
 /*
  * OUI Spy UniPwn Web Interface - Real BLE Functionality
- * Authentic OUI Spy styling with baby blue to pink gradient
+ * 
  */
 
 #include "config.h"
