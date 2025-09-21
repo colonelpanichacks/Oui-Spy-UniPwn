@@ -1,6 +1,6 @@
 /*
  * OUI Spy UniPwn Web Interface - Real BLE Functionality
- * 
+ * Authentic OUI Spy styling with baby blue to pink gradient
  */
 
 #include "config.h"
@@ -17,6 +17,20 @@ struct UnitreeDevice; // Forward declaration
 extern std::vector<UnitreeDevice> discoveredDevices;
 extern bool executeCommand(const UnitreeDevice& device, const String& command);
 extern void scanForDevices();
+extern bool buzzerEnabled;
+extern bool ledEnabled;
+extern void saveConfiguration();
+
+// Hardware feedback function declarations
+#if ENABLE_BUZZER
+extern void singleBeep();
+extern void stopProximityBeep();
+#endif
+
+#if ENABLE_LED_FEEDBACK
+extern void ledBlink(int duration);
+extern void stopProximityLED();
+#endif
 
 WebServer webServer(WEB_SERVER_PORT);
 DNSServer dnsServer;
@@ -67,14 +81,7 @@ const char* webPageHTML = R"rawliteral(
             height: 100%;
             z-index: 0;
             opacity: 0.6;
-            background: -webkit-linear-gradient(45deg, #32ff32, #ff69b4);
-            background: -moz-linear-gradient(45deg, #32ff32, #ff69b4);
-            background: linear-gradient(45deg, #32ff32, #ff69b4);
-            -webkit-background-clip: text;
-            -moz-background-clip: text;
-            background-clip: text;
-            -webkit-text-fill-color: transparent;
-            -moz-text-fill-color: transparent;
+            color: #ff0000;  /* Bright red ASCII art text */
             font-family: 'Courier New', monospace;
             font-size: 8px;
             line-height: 8px;
@@ -264,6 +271,26 @@ const char* webPageHTML = R"rawliteral(
                     </div>
                 </div>
                 <textarea id="deviceList" readonly placeholder="Discovered Unitree robots will appear here..."></textarea>
+            </div>
+            
+            <div class="section">
+                <h3>Hardware Settings</h3>
+                <div class="toggle-container" style="display: flex; flex-direction: column; gap: 15px;">
+                    <div class="toggle-item">
+                        <label style="color: #ffffff; display: flex; align-items: center; gap: 10px;">
+                            <input type="checkbox" id="buzzerEnabled" name="buzzerEnabled" onchange="toggleBuzzer()" )html" + String(buzzerEnabled ? "checked" : "") + R"html(>
+                            <span>Enable Buzzer</span>
+                        </label>
+                        <div style="color: #cccccc; font-size: 12px; margin-top: 5px;">Audio feedback for boot and bot detection</div>
+                    </div>
+                    <div class="toggle-item">
+                        <label style="color: #ffffff; display: flex; align-items: center; gap: 10px;">
+                            <input type="checkbox" id="ledEnabled" name="ledEnabled" onchange="toggleLED()" )html" + String(ledEnabled ? "checked" : "") + R"html(>
+                            <span>Enable LED</span>
+                        </label>
+                        <div style="color: #cccccc; font-size: 12px; margin-top: 5px;">Orange LED blinks with buzzer feedback</div>
+                    </div>
+                </div>
             </div>
             
             <div class="section">
@@ -1004,6 +1031,39 @@ const char* webPageHTML = R"rawliteral(
             return new Promise(resolve => setTimeout(resolve, ms));
         }
 
+        // Hardware toggle functions
+        function toggleBuzzer() {
+            const buzzerEnabled = document.getElementById('buzzerEnabled').checked;
+            fetch('/toggle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'setting=buzzer&value=' + (buzzerEnabled ? '1' : '0')
+            })
+            .then(response => response.text())
+            .then(data => {
+                addLog('Buzzer ' + (buzzerEnabled ? 'enabled' : 'disabled'), 'success');
+            })
+            .catch(error => {
+                addLog('Failed to toggle buzzer: ' + error, 'error');
+            });
+        }
+
+        function toggleLED() {
+            const ledEnabled = document.getElementById('ledEnabled').checked;
+            fetch('/toggle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'setting=led&value=' + (ledEnabled ? '1' : '0')
+            })
+            .then(response => response.text())
+            .then(data => {
+                addLog('LED feedback ' + (ledEnabled ? 'enabled' : 'disabled'), 'success');
+            })
+            .catch(error => {
+                addLog('Failed to toggle LED: ' + error, 'error');
+            });
+        }
+
         // Initialize on load
         document.addEventListener('DOMContentLoaded', function() {
             // Page loaded, get system info
@@ -1126,6 +1186,54 @@ void handleNotFound() {
     webServer.send(404, "text/plain", "Page not found");
 }
 
+void handleToggle() {
+    if (webServer.hasArg("setting") && webServer.hasArg("value")) {
+        String setting = webServer.arg("setting");
+        String value = webServer.arg("value");
+        bool enabled = (value == "1");
+        
+        if (setting == "buzzer") {
+            buzzerEnabled = enabled;
+            Serial.println("Web: Buzzer " + String(enabled ? "enabled" : "disabled"));
+            if (enabled) {
+                // Test beep when enabled
+                #if ENABLE_BUZZER
+                singleBeep();
+                #endif
+            } else {
+                // Stop any active buzzing when disabled
+                #if ENABLE_BUZZER
+                stopProximityBeep();
+                ledcWrite(BUZZER_PIN, 0);
+                #endif
+            }
+            saveConfiguration();
+            webServer.send(200, "text/plain", "OK");
+        } else if (setting == "led") {
+            ledEnabled = enabled;
+            Serial.println("Web: LED " + String(enabled ? "enabled" : "disabled"));
+            if (enabled) {
+                // Test blink when enabled
+                #if ENABLE_LED_FEEDBACK
+                ledBlink(200);
+                #endif
+            } else {
+                // Turn off LED when disabled
+                #if ENABLE_LED_FEEDBACK
+                stopProximityLED();
+                digitalWrite(LED_PIN, HIGH);  // HIGH = OFF (inverted logic)
+                #endif
+            }
+            saveConfiguration();
+            webServer.send(200, "text/plain", "OK");
+        } else {
+            webServer.send(400, "text/plain", "Invalid setting");
+        }
+    } else {
+        webServer.send(400, "text/plain", "Missing parameters");
+    }
+}
+
 void setupWebInterface() {
     // Set up access point
     WiFi.mode(WIFI_AP);
@@ -1139,6 +1247,7 @@ void setupWebInterface() {
     webServer.on("/scan", HTTP_POST, handleScan);
     webServer.on("/exploit", HTTP_POST, handleExploit);
     webServer.on("/status", handleStatus);
+    webServer.on("/toggle", HTTP_POST, handleToggle);
     webServer.onNotFound(handleNotFound);
     
     // Start web server

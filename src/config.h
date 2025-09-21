@@ -28,10 +28,21 @@
 #define ENABLE_DISPLAY false        // Set to true if using OLED/TFT display
 #define ENABLE_SD_LOGGING false     // Set to true for SD card logging
 #define ENABLE_GPS false            // Set to true for GPS location logging
+#define ENABLE_BUZZER true          // Enable audio feedback via buzzer
+#define ENABLE_LED_FEEDBACK true    // Enable LED status indicators
+
+// Buzzer Settings (if enabled)
+#if ENABLE_BUZZER
+#define BUZZER_PIN 3                // GPIO3 for buzzer - confirmed working in OUI Spy Foxhunter  
+#define BUZZER_FREQ 2000           // Frequency in Hz
+#define BUZZER_DUTY 127            // 50% duty cycle for good volume without excessive power draw
+#define BEEP_DURATION 200          // Duration of each beep in ms
+#define BEEP_PAUSE 150             // Pause between beeps in ms
+#endif
 
 // Web Interface Settings (if enabled)
 #if ENABLE_WEB_INTERFACE
-#define WIFI_AP_SSID "unipwn"
+#define WIFI_AP_SSID "UniPwn" // Simple AP name as requested
 #define WIFI_AP_PASSWORD "unipwn123"
 #define WEB_SERVER_PORT 80
 #endif
@@ -81,7 +92,7 @@
 
 #ifdef ARDUINO_XIAO_ESP32S3
 #define HAS_PSRAM true
-#define LED_PIN 21  // XIAO ESP32-S3 built-in LED
+#define LED_PIN 21  // XIAO ESP32-S3 built-in orange LED (User LED)
 #undef DEVICE_NAME
 #define DEVICE_NAME "XIAO-UniPwn"
 #define COMPACT_MODE true  // Optimized for small form factor

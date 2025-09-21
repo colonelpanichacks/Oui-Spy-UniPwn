@@ -13,8 +13,8 @@ This project ports the powerful UniPwn Unitree robot exploitation research to ES
 ## Research Credits
 
 This implementation is built upon the groundbreaking security research conducted by:
-- **Bin4ry**
-- **d0tslash** 
+- **Bin4ry** - Primary researcher and vulnerability discovery
+- **d0tslash** - Co-researcher and exploitation development
 - **Original Research**: https://github.com/Bin4ry/UniPwn
 
 All credit for the vulnerability discovery, protocol analysis, and initial exploitation techniques goes to these security researchers. This ESP32 port simply adapts their excellent work to embedded hardware.
