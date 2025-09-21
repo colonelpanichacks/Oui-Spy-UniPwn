@@ -1,6 +1,6 @@
 /*
  * ESP32-S3 Unitree Robot BLE Exploit Tool
-
+ * Based on UniPwn research by Bin4ry and h0stile
  * 
  * This tool exploits the BLE WiFi configuration vulnerability
  * in Unitree robots (Go2, G1, H1, B2 series)
@@ -17,6 +17,7 @@
 #include <SPIFFS.h>
 #include <ArduinoJson.h>
 #include <mbedtls/aes.h>
+#include <Preferences.h>
 #include <vector>
 #include <map>
 #include <algorithm>
@@ -81,6 +82,11 @@ std::vector<uint8_t> receivedNotification;
 bool notificationReceived = false;
 std::map<uint8_t, std::vector<uint8_t>> serialChunks;
 
+// Hardware feedback runtime toggles
+bool buzzerEnabled = true;
+bool ledEnabled = true;
+Preferences preferences;
+
 // Function declarations
 void styledPrint(const String& message, bool verboseOnly = false);
 String buildPwn(const String& cmd);
@@ -96,6 +102,24 @@ void exploitDevice(const String& ssid, const String& password);
 void loadRecentDevices();
 void saveRecentDevices();
 void addRecentDevice(const UnitreeDevice& device);
+void saveConfiguration();
+void loadConfiguration();
+
+// Hardware feedback function declarations
+#if ENABLE_BUZZER || ENABLE_LED_FEEDBACK
+void initializeHardwareFeedback();
+void feedbackExploitSuccess();
+void feedbackExploitFailed();
+void feedbackTargetFound();
+void feedbackScanning();
+void feedbackConnecting();
+void handleProximityFeedback(int rssi);
+void stopAllFeedback();
+void toggleBuzzer();
+void toggleLED();
+void botDetectionBeeps();
+void feedbackBotDetection();
+#endif
 bool executeCommand(const UnitreeDevice& device, const String& command);
 
 void setup() {
@@ -107,22 +131,29 @@ void setup() {
         styledPrint("[-] SPIFFS initialization failed");
     }
     
-    // Load recent devices
+    // Load recent devices and configuration
     loadRecentDevices();
+    loadConfiguration();
     
     // Initialize BLE
     BLEDevice::init("ESP32-UniPwn");
     
-    // Display banner
-    Serial.println("\n\033[1;32m");
+    // Display banner with red background for pentesting theme
+    Serial.println("\n\033[41;1;37m");  // Red background, bold white text
     Serial.println("+=======================================+");
     Serial.println("|   OUI Spy - UniPwn Edition           |");
     Serial.println("| Unitree Robot BLE Exploit Platform   |");
     Serial.println("| Go2, G1, H1, B2 Series Support       |");
     Serial.println("+=======================================+");
+    Serial.println("\033[0m\033[1;31m");  // Reset background, keep red text
     Serial.println("  Based on: github.com/Bin4ry/UniPwn");
     Serial.println("  Research by Bin4ry & h0stile - 2025");
     Serial.println("\033[0m");
+    
+    // Initialize hardware feedback system
+#if ENABLE_BUZZER || ENABLE_LED_FEEDBACK
+    initializeHardwareFeedback();
+#endif
     
 #if ENABLE_WEB_INTERFACE
     setupWebInterface();
@@ -249,7 +280,7 @@ bool genericResponseValidator(const std::vector<uint8_t>& response, uint8_t expe
 }
 
 void displayMenu() {
-    Serial.println("\n\033[1;33m=== OUI Spy UniPwn Menu ===\033[0m");
+    Serial.println("\n\033[41;1;37m=== OUI Spy UniPwn Menu ===\033[0m");
     Serial.println("1. Scan for Unitree robots");
     Serial.println("2. Show recent targets");
     Serial.println("3. Connect and exploit target");
@@ -259,7 +290,13 @@ void displayMenu() {
 #if ENABLE_WEB_INTERFACE
     Serial.println("7. Web interface info");
 #endif
-    Serial.print("\n\033[1;32m[//] Enter choice: \033[0m");
+#if ENABLE_BUZZER
+    Serial.println("8. Toggle buzzer feedback (current: " + String(buzzerEnabled ? "ON" : "OFF") + ")");
+#endif
+#if ENABLE_LED_FEEDBACK
+    Serial.println("9. Toggle LED feedback (current: " + String(ledEnabled ? "ON" : "OFF") + ")");
+#endif
+    Serial.print("\n\033[1;31m[//] Enter choice: \033[0m");
 }
 
 void handleMenuChoice(int choice) {
@@ -286,6 +323,16 @@ void handleMenuChoice(int choice) {
 #if ENABLE_WEB_INTERFACE
         case 7:
             showWebInterfaceInfo();
+            break;
+#endif
+#if ENABLE_BUZZER
+        case 8:
+            toggleBuzzer();
+            break;
+#endif
+#if ENABLE_LED_FEEDBACK
+        case 9:
+            toggleLED();
             break;
 #endif
         default:
@@ -324,6 +371,11 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             if (!found) {
                 discoveredDevices.push_back(device);
                 styledPrint("Found: " + device.name + " (" + device.address + ") RSSI: " + String(device.rssi));
+                
+                // Bot detection feedback - 3 fast beeps and LED pattern
+#if ENABLE_BUZZER || ENABLE_LED_FEEDBACK
+                feedbackBotDetection();
+#endif
             }
         }
     }
@@ -475,6 +527,25 @@ bool executeCommand(const UnitreeDevice& device, const String& command) {
     
     Serial.println("[EXPLOIT] Command execution completed");
     return true;
+}
+
+// Configuration storage functions
+void saveConfiguration() {
+    preferences.begin("unipwn", false);
+    preferences.putBool("buzzerEnabled", buzzerEnabled);
+    preferences.putBool("ledEnabled", ledEnabled);
+    preferences.end();
+    styledPrint("Configuration saved");
+}
+
+void loadConfiguration() {
+    preferences.begin("unipwn", true);
+    buzzerEnabled = preferences.getBool("buzzerEnabled", true);
+    ledEnabled = preferences.getBool("ledEnabled", true);
+    preferences.end();
+    
+    styledPrint("Buzzer: " + String(buzzerEnabled ? "ON" : "OFF") + 
+               ", LED: " + String(ledEnabled ? "ON" : "OFF"));
 }
 
 // selectAndExploitDevice() is implemented in exploitation.ino
