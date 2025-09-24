@@ -13,6 +13,7 @@
 
 // Forward declarations
 struct UnitreeDevice; // Forward declaration
+class AsyncWebServerRequest; // Forward declaration for AsyncWebServer
 
 extern std::vector<UnitreeDevice> discoveredDevices;
 extern bool executeCommand(const UnitreeDevice& device, const String& command);
@@ -35,25 +36,19 @@ extern void stopProximityLED();
 WebServer webServer(WEB_SERVER_PORT);
 DNSServer dnsServer;
 
+// Real-time update variables
+String lastRealtimeUpdate = "";
+bool realtimeUpdateAvailable = false;
+
+// Serial log mirroring variables
+String serialLogBuffer = "";
+bool skipMenuOutput = true;  // Skip initial menu display
+
 String getASCIIArt() {
+    // ASCII art temporarily removed. Paste your new art below between R"( and )" or return empty.
     return String(R"(
-                           @@@@@@@@                                                         @@@@@@@@                                        
-                       @@@ @@@@@@@@@@                                                    @@@@@@@@@@ @@@@                                    
-                               @@@@ @ @ @@@@@@@@@@@@@                                               @@@@@@@@@@@@ @@@@@@@@                                
-                     @@@@ @@@@@@@@@@@@@@@@@@@@@@@@                                          @@@@@@@@@@@@@@@@@@@ @@@@@@@@@                           
-                 @@@@@@@@ @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@                                    @@@@@@@@@@@@@@@@@@@@@@@@@@ @@@@@@@@@                       
-            @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@                                                        @@@@@@ @@@@@@@@@          @@@@@@@@@@@@                                @@@@@@@@@@@@@          @@@@@@@@@@@@@@@                       
-           @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@                                                   @@@@@@@@@ @@@               @@@@@@@@@@@@@                          @@@@@@@@@@@@@               @@@@@@@@@@@@@                       
-          @@@ @@@@@@@@@@@@@       @@@@@@@@@@@@@@                                                  @@ @@@@@@@@@                  @@@@@@@@@@@@@@                     @@@@@@@@ @@@@                   @@@@@  @@@@                       
-          @@@@ @@@@@@@@@              @@@@@@@@@@@@                                                  @@@@   @@@@                   @@@@@@@@@@@ @@                     @ @@@@@@@@@@@                    @@@@  @ @@                       
-          @@@@@@@ @@@                   @@@@@@@@@@@@@                                                   @@@  @@@@                     @@ @@@@@@@@@@                     @@@@@@@@@ @@@                     @@@  @@ @                       
-          @@@@@  @ @@                   @@@@@@@@@@@@@@@@@@@@@@@@@@@@                   @@@  @@@@                     @@@  @@ @                              @ @@@@@                      @@@@ @@@@                       
-           @@@   @@@                     @@@@@@@ @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@                    @@@@ @@@@                    @@@@  @@@@                              @@@@@@@@                    @@@@@@@@@@                       
-           @@@@ @@@@                     @@ @@@@ @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@   @@@                     @@@@ @@@@@                   @@@   @ @                                 @ @@@@@                  @@@@@@@@@@                        
-           @@@@ @@@@                     @@ @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@  @@@                     @@@@@@@ @@@                @@@@@   @ @                                 @ @ @@@@                @@@@@@@@@ @                        
-           @@@@ @@@@@                   @@@ @ @                                @@@@  @@@@                   @@@@@@@@@@@@             @@@@@    @@@@                               @@@@  @@@@@            @@@@@@@  @  @                        
-           @@@@ @@@@                   @@@@@@@                                  @@@@  @@@@                   @@@@@@@@@@@@             @@@@@    @@@@                               @@@@  @@@@@            @@@@@@@  @  @                        
-)");
+
+)" );
 }
 
 const char* webPageHTML = R"rawliteral(
@@ -187,6 +182,17 @@ const char* webPageHTML = R"rawliteral(
             background: rgba(0, 0, 0, 0.3);
             color: #00ff00;
         }
+        .log-serial { color: #89CFF0; }      /* Baby blue for serial debug */
+        .log-ble { color: #89CFF0; }         /* Baby blue for BLE events */
+        .log-bluetooth { color: #0080ff; }   /* Blue for bluetooth events */
+        .log-detection { color: #ff1493; }   /* HOT PINK for device detections */
+        .log-web { color: #32ff32; }         /* Green for web events */
+        .log-exploit { color: #ff6b6b; }     /* Red for exploit actions */
+        .log-target { color: #ffff32; }      /* Yellow for target events */
+        .log-error { color: #ff3232; }       /* Bright red for errors */
+        .log-success { color: #32ff32; }     /* Green for success */
+        .log-scan { color: #ff69b4; }        /* Pink for scanning */
+        .log-uuid { color: #89CFF0; }        /* Baby blue for UUIDs */
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
@@ -223,10 +229,66 @@ const char* webPageHTML = R"rawliteral(
             align-items: center;
             justify-content: center;
         }
+        .target-button {
+            padding: 15px;
+            margin: 5px;
+            border: 2px solid #ff6b6b;
+            border-radius: 8px;
+            background: rgba(255, 107, 107, 0.1);
+            color: #ffffff;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-align: left;
+            min-width: 300px;
+            font-family: 'Courier New', monospace;
+        }
+        .target-button:hover {
+            border-color: #32ff32;
+            background: rgba(50, 255, 50, 0.1);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(50, 255, 50, 0.3);
+        }
+        .target-button.selected {
+            border-color: #32ff32;
+            background: rgba(50, 255, 50, 0.2);
+            color: #32ff32;
+        }
+        .target-button .robot-name {
+            font-size: 18px;
+            font-weight: bold;
+            color: #ff6b6b;
+            margin-bottom: 5px;
+        }
+        .target-button.selected .robot-name {
+            color: #32ff32;
+        }
+        .target-button .robot-info {
+            font-size: 12px;
+            color: #cccccc;
+            line-height: 1.4;
+        }
+        .rssi-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+            border: 1px solid rgba(255,255,255,0.3);
+        }
+        .rssi-excellent { background-color: #32ff32; box-shadow: 0 0 8px #32ff32; }
+        .rssi-good { background-color: #ffff32; box-shadow: 0 0 8px #ffff32; }
+        .rssi-fair { background-color: #ff8c32; box-shadow: 0 0 8px #ff8c32; }
+        .rssi-weak { background-color: #ff3232; box-shadow: 0 0 8px #ff3232; }
+        #targetButtons {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
         @media (max-width: 768px) {
             .grid { grid-template-columns: 1fr; }
             h1 { font-size: 32px; }
             .container { padding: 20px; margin: 10px; }
+            .target-button { min-width: 250px; }
         }
     </style>
 </head>
@@ -245,11 +307,6 @@ const char* webPageHTML = R"rawliteral(
                 <div style="margin-bottom: 15px;">
                     <button onclick="toggleScan()" id="scanButton">Start BLE Scan</button>
                     <button onclick="clearTargets()">Clear Targets</button>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <label style="color: #ffffff;">
-                        <input type="checkbox" id="continuousMode" onchange="toggleContinuous()"> Continuous Scanning
-                    </label>
                 </div>
                 <div id="scanStatus" style="margin: 10px 0; min-height: 20px;">
                     <div id="scanIndicator" style="display: none; color: #00ff00;">
@@ -274,6 +331,18 @@ const char* webPageHTML = R"rawliteral(
             </div>
             
             <div class="section">
+                <h3>Target Selection</h3>
+                <div id="targetSelectionArea" style="margin-bottom: 15px;">
+                    <div id="noTargetsMessage" style="padding: 15px; text-align: center; color: #cccccc; border: 2px dashed #555; border-radius: 8px;">
+                        No targets detected. Start a BLE scan to discover Unitree robots.
+                    </div>
+                    <div id="targetButtons" style="display: none; gap: 10px; flex-wrap: wrap;">
+                        <!-- Target buttons will be populated here -->
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
                 <h3>Hardware Settings</h3>
                 <div class="toggle-container" style="display: flex; flex-direction: column; gap: 15px;">
                     <div class="toggle-item">
@@ -290,12 +359,15 @@ const char* webPageHTML = R"rawliteral(
                         </label>
                         <div style="color: #cccccc; font-size: 12px; margin-top: 5px;">Orange LED blinks with buzzer feedback</div>
                     </div>
+                    <button onclick="saveHardwareSettings()" style="margin-top: 15px; padding: 10px 20px; background: #32ff32; color: #000; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Save Hardware Settings</button>
                 </div>
             </div>
             
             <div class="section">
                 <h3>Attack Vectors</h3>
-                <div id="selectedTarget" style="margin-bottom: 15px; color: #8a2be2;">No target selected</div>
+                <div id="selectedTarget" style="margin-bottom: 15px; padding: 10px; border: 2px solid #ff6b6b; border-radius: 8px; background: rgba(255, 107, 107, 0.1); color: #ff6b6b; font-weight: bold;">
+                    No target selected - Click a robot above to select
+                </div>
                 
                 <div style="margin-bottom: 25px; padding: 15px; border: 2px solid #ff6b6b; border-radius: 8px; background: rgba(255, 107, 107, 0.1);">
                     <h4 style="color: #ff6b6b; margin-bottom: 10px;">AutoPwn - Complete Exploitation</h4>
@@ -380,23 +452,46 @@ const char* webPageHTML = R"rawliteral(
         let selectedDevice = null;
         let exploitStats = { successful: 0, failed: 0 };
         let isScanning = false;
-        let continuousScanning = false;
+        let continuousTimer = null;
         let scanCount = 0;
         let scanInterval;
         let autoPwnRunning = false;
         let autoPwnCount = 0;
+        let backgroundPoll = null;
 
         function addLog(message, type = 'info') {
             const logOutput = document.getElementById('logOutput');
             const timestamp = new Date().toLocaleTimeString();
             let prefix = '[i]';
+            let colorClass = '';
             
-            if (type === 'success') prefix = '[+]';
-            else if (type === 'error') prefix = '[-]';
-            else if (type === 'scan') prefix = '[*]';
-            else if (type === 'exploit') prefix = '[>]';
+            // Set prefix and color class based on type
+            if (type === 'success') { prefix = '[+]'; colorClass = 'log-success'; }
+            else if (type === 'error') { prefix = '[-]'; colorClass = 'log-error'; }
+            else if (type === 'scan') { prefix = '[*]'; colorClass = 'log-scan'; }
+            else if (type === 'exploit') { prefix = '[>]'; colorClass = 'log-exploit'; }
+            else if (type === 'ble') { prefix = '[BLE]'; colorClass = 'log-ble'; }
+            else if (type === 'bluetooth') { prefix = '[BT]'; colorClass = 'log-bluetooth'; }
+            else if (type === 'detection') { prefix = '[DETECT]'; colorClass = 'log-detection'; }
+            else if (type === 'web') { prefix = '[WEB]'; colorClass = 'log-web'; }
+            else if (type === 'serial') { prefix = '[//]'; colorClass = 'log-serial'; }
+            else if (type === 'target') { prefix = '[TARGET]'; colorClass = 'log-target'; }
+            else if (type === 'uuid') { prefix = '[UUID]'; colorClass = 'log-uuid'; }
             
             logOutput.value += timestamp + ' ' + prefix + ' ' + message + '\\n';
+            logOutput.scrollTop = logOutput.scrollHeight;
+        }
+        
+        // Enhanced log function for serial debug mirroring
+        function addSerialLog(message, category = 'serial') {
+            // Mirror all serial output to operations log with color coding
+            const timestamp = new Date().toLocaleTimeString();
+            const logOutput = document.getElementById('logOutput');
+            
+            // Clean up ANSI escape codes from serial output
+            const cleanMessage = message.replace(/\\033\\[[0-9;]*m/g, '');
+            
+            logOutput.value += timestamp + ' [SERIAL] ' + cleanMessage + '\\n';
             logOutput.scrollTop = logOutput.scrollHeight;
         }
 
@@ -421,30 +516,332 @@ const char* webPageHTML = R"rawliteral(
             document.getElementById('deviceList').value = '';
             document.getElementById('targetsFound').textContent = '0';
             selectedDevice = null;
-            document.getElementById('selectedTarget').textContent = 'No target selected';
+            document.getElementById('selectedTarget').innerHTML = 'No target selected - Click a robot below to select';
+            document.getElementById('selectedTarget').style.borderColor = '#ff6b6b';
+            document.getElementById('selectedTarget').style.backgroundColor = 'rgba(255, 107, 107, 0.1)';
+            document.getElementById('selectedTarget').style.color = '#ff6b6b';
+            
+            // Clear target buttons
+            document.getElementById('noTargetsMessage').style.display = 'block';
+            document.getElementById('targetButtons').style.display = 'none';
+            document.getElementById('targetButtons').innerHTML = '';
+            
+            // Disable attack buttons
+            document.getElementById('autoPwnButton').disabled = true;
+            document.getElementById('autoPwnButton').textContent = 'START AUTOPWN';
+            document.getElementById('autoPwnButton').style.background = 'linear-gradient(45deg, #ff6b6b, #ff8e8e)';
+            
             addLog('Target list cleared', 'info');
         }
 
+        function updateTargetsRealtime(devices) {
+            console.log('updateTargetsRealtime called with:', devices);
+            addLog('Real-time update: ' + devices.length + ' devices', 'info');
+            
+            const deviceList = document.getElementById('deviceList');
+            const targetsFound = document.getElementById('targetsFound');
+            
+            // Update the text area for detailed info
+            if (devices.length === 0) {
+                deviceList.value = 'No Unitree robots detected.\\n\\nEnsure targets are:\\n- Powered on and active\\n- Within BLE range (10-30m)\\n- Not in sleep mode\\n\\nSupported models: Go2, G1, H1, B2';
+                targetsFound.textContent = '0';
+            } else {
+                let output = 'LIVE TARGETS DETECTED (' + devices.length + '):\\n';
+                output += '='.repeat(50) + '\\n\\n';
+                
+                devices.forEach((device, index) => {
+                    const rssi = device.rssi ? device.rssi + 'dBm' : 'N/A';
+                    const model = device.name ? device.name.replace('Unitree_', '') : 'Unknown';
+                    const signalStrength = device.rssi > -60 ? 'Excellent' : device.rssi > -70 ? 'Good' : device.rssi > -80 ? 'Fair' : 'Weak';
+                    
+                    output += 'TARGET #' + (index + 1) + '\\n';
+                    output += 'Model: ' + model + '\\n';
+                    output += 'Address: ' + device.address + '\\n';
+                    output += 'Signal: ' + rssi + ' (' + signalStrength + ')\\n';
+                    output += 'Status: READY FOR EXPLOITATION\\n';
+                    output += '-'.repeat(40) + '\\n\\n';
+                });
+                
+                deviceList.value = output;
+                targetsFound.textContent = devices.length;
+            }
+            
+            // Update the clickable target selection area
+            showTargets(devices); // Use the guaranteed working function
+            
+            // Store devices for selection
+            window.discoveredDevices = devices;
+            
+            addLog('Real-time update: ' + devices.length + ' targets ready for selection', 'success');
+        }
+
+        // DISABLED - using showTargets instead
+        function updateTargetButtons_DISABLED(devices) {
+            const noTargetsMessage = document.getElementById('noTargetsMessage');
+            const targetButtons = document.getElementById('targetButtons');
+            
+            if (devices.length === 0) {
+                noTargetsMessage.style.display = 'block';
+                targetButtons.style.display = 'none';
+                targetButtons.innerHTML = '';
+                return;
+            }
+            
+            noTargetsMessage.style.display = 'none';
+            targetButtons.style.display = 'flex';
+            targetButtons.innerHTML = '';
+            
+            devices.forEach((device, index) => {
+                const model = device.name ? device.name.replace('Unitree_', '') : 'Unknown';
+                const rssi = device.rssi ? device.rssi + 'dBm' : 'N/A';
+                const signalStrength = device.rssi > -60 ? 'Excellent' : device.rssi > -70 ? 'Good' : device.rssi > -80 ? 'Fair' : 'Weak';
+                const rssiClass = device.rssi > -60 ? 'rssi-excellent' : device.rssi > -70 ? 'rssi-good' : device.rssi > -80 ? 'rssi-fair' : 'rssi-weak';
+                
+                const button = document.createElement('div');
+                button.className = 'target-button';
+                button.onclick = () => selectTargetFromButton(device, button);
+                
+                button.innerHTML = 
+                    '<div class=\"robot-name\">' + model + '</div>' +
+                    '<div class=\"robot-info\">' +
+                    'Address: ' + device.address + '<br>' +
+                    '<span class=\"rssi-indicator ' + rssiClass + '\"></span>Signal: ' + rssi + ' (' + signalStrength + ')<br>' +
+                    'Status: Ready for exploitation' +
+                    '</div>';
+                
+                targetButtons.appendChild(button);
+            });
+        }
+
+        function selectTargetFromButton(device, buttonElement) {
+            // Remove selected class from all buttons
+            document.querySelectorAll('.target-button').forEach(btn => {
+                btn.classList.remove('selected');
+            });
+            
+            // Add selected class to clicked button
+            buttonElement.classList.add('selected');
+            
+            // Select the target
+            selectTarget(device);
+        }
+
+        function selectTarget(device) {
+            selectedDevice = device;
+            const model = device.name ? device.name.replace('Unitree_', '') : 'Unknown';
+            const rssi = device.rssi ? device.rssi + 'dBm' : 'N/A';
+            const signalStrength = device.rssi > -60 ? 'Excellent' : device.rssi > -70 ? 'Good' : device.rssi > -80 ? 'Fair' : 'Weak';
+            
+            document.getElementById('selectedTarget').innerHTML = 
+                '<strong>SELECTED TARGET:</strong><br>' +
+                'Model: ' + model + '<br>' +
+                'Address: ' + device.address + '<br>' +
+                'Signal: ' + rssi + ' (' + signalStrength + ')';
+            
+            document.getElementById('selectedTarget').style.borderColor = '#32ff32';
+            document.getElementById('selectedTarget').style.backgroundColor = 'rgba(50, 255, 50, 0.1)';
+            document.getElementById('selectedTarget').style.color = '#32ff32';
+            
+            addLog('Target selected: ' + model + ' (' + device.address + ') - Ready for exploitation!', 'success');
+            
+            // Enable attack buttons
+            document.getElementById('autoPwnButton').disabled = false;
+            document.getElementById('autoPwnButton').textContent = 'START AUTOPWN ON ' + model.toUpperCase();
+            document.getElementById('autoPwnButton').style.background = 'linear-gradient(45deg, #32ff32, #69ff69)';
+        }
+
+        let scanRunning = false;
+        let realtimePoll = null;
+        
         function scanDevices() {
-            const scanStatus = document.getElementById('scanStatus');
-            scanStatus.textContent = 'Scanning for Unitree robots...';
+            if (scanRunning) return;
+            scanRunning = true;
             
-            addLog('Starting BLE scan for Unitree robots', 'scan');
+            addLog('BLE SCAN INITIATED: Real-time detection active', 'ble');
+            document.getElementById('scanStatus').innerHTML = '<span style="color: #32ff32;">Scanning for bots<span id="scanDots">.</span></span>';
             
+            // Start dot animation
+            let dotCount = 1;
+            const dotAnimation = setInterval(() => {
+                if (!scanRunning) {
+                    clearInterval(dotAnimation);
+                    return;
+                }
+                dotCount = (dotCount % 3) + 1;
+                const dots = '.'.repeat(dotCount);
+                const dotsElement = document.getElementById('scanDots');
+                if (dotsElement) {
+                    dotsElement.textContent = dots;
+                }
+            }, 500);
+            
+            // Clear targets
+            showTargets([]);
+            
+            // REAL-TIME polling every 100ms for INSTANT target detection
+            realtimePoll = setInterval(() => {
+                fetch('/poll')
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.devices && data.devices.length > 0) {
+                            // HOT PINK detection logging with UUIDs
+                            data.devices.forEach((device, index) => {
+                                addLog('ROBOT DETECTED: ' + device.name + ' [' + device.address + '] RSSI: ' + device.rssi + 'dBm', 'detection');
+                                if (device.uuid && device.uuid !== 'N/A') {
+                                    addLog('└─ UUID: ' + device.uuid, 'uuid');
+                                }
+                            });
+                            addLog('TOTAL TARGETS: ' + data.devices.length + ' robots ready for exploitation', 'success');
+                            showTargets(data.devices);
+                            // Update count immediately
+                            document.getElementById('scanStatus').innerHTML = '<span style="color: #32ff32;">LIVE: ' + data.devices.length + ' robots detected</span>';
+                        }
+                    })
+                    .catch(error => console.log('Poll error:', error));
+            }, 100); // ULTRA-FAST 100ms polling for real-time updates
+            
+            // Start the scan
             fetch('/scan', { method: 'POST' })
                 .then(response => response.json())
                 .then(data => {
-                    displayDevices(data.devices || []);
-                    scanStatus.textContent = 'Scan complete - ' + (data.devices ? data.devices.length : 0) + ' devices found';
-                    addLog('BLE scan completed - found ' + (data.devices ? data.devices.length : 0) + ' Unitree robots', 'success');
+                    // Keep polling for 10 more seconds after scan completes for stragglers
+                    setTimeout(() => {
+                        clearInterval(realtimePoll);
+                        scanRunning = false;
+                        addLog('SCAN CYCLE COMPLETE: ' + (data.devices ? data.devices.length : 0) + ' targets found', 'success');
+                        document.getElementById('scanStatus').innerHTML = '<span style="color: #32ff32;">Continuous Mode - ' + (data.devices ? data.devices.length : 0) + ' found (next scan in 30s)</span>';
+                    }, 10000);
                 })
                 .catch(error => {
-                    scanStatus.textContent = 'Scan failed';
-                    addLog('BLE scan failed: ' + error.message, 'error');
+                    clearInterval(realtimePoll);
+                    scanRunning = false;
+                    addLog('SCAN ERROR: ' + error.message, 'error');
+                    document.getElementById('scanStatus').innerHTML = '<span style="color: #ff3232;">Scan failed</span>';
                 });
         }
+        
+        function showTargets(devices) {
+            console.log('showTargets called with:', devices);
+            
+            // GUARANTEED target count update
+            document.getElementById('targetsFound').textContent = devices.length;
+            
+            const noMsg = document.getElementById('noTargetsMessage');
+            const buttons = document.getElementById('targetButtons');
+            
+            // FORCE clear everything first
+            buttons.innerHTML = '';
+            
+            if (!devices || devices.length === 0) {
+                console.log('No devices - showing no targets message');
+                noMsg.style.display = 'block';
+                buttons.style.display = 'none';
+                return;
+            }
+            
+            console.log('Creating buttons for', devices.length, 'devices');
+            
+            // GUARANTEED button creation
+            noMsg.style.display = 'none';
+            buttons.style.display = 'flex';
+            buttons.style.flexDirection = 'column';
+            buttons.style.gap = '10px';
+            
+            // Create buttons with GUARANTEED visibility
+            devices.forEach((device, index) => {
+                console.log('Creating button for device:', device.name);
+                
+                const btn = document.createElement('div');
+                btn.className = 'target-button'; // Add class for easier selection
+                btn.style.cssText = 'margin:8px 0; padding:15px; border:3px solid #ff1493; border-radius:8px; background:rgba(255,20,147,0.2); color:#ff1493; cursor:pointer; font-family:monospace; font-weight:bold; font-size:14px; min-height:80px; display:block !important;';
+                
+                // Hot pink for visibility!
+                const signalColor = device.rssi > -60 ? '#ff1493' : device.rssi > -70 ? '#ff69b4' : device.rssi > -80 ? '#ff1493' : '#dc143c';
+                btn.style.borderColor = signalColor;
+                btn.style.color = signalColor;
+                btn.style.backgroundColor = signalColor + '20';
+                
+                btn.onclick = () => {
+                    console.log('Button clicked for:', device.name);
+                    console.log('Device object:', device);
+                    
+                    // Remove selected class from all buttons first
+                    document.querySelectorAll('.target-button').forEach(b => {
+                        b.style.borderColor = '#ff1493';
+                        b.style.backgroundColor = 'rgba(255,20,147,0.2)';
+                    });
+                    
+                    // Highlight this button as selected
+                    btn.style.borderColor = '#32ff32';
+                    btn.style.backgroundColor = 'rgba(50,255,50,0.2)';
+                    
+                    selectDevice(device);
+                };
+                
+                btn.innerHTML = 
+                    '<div style="font-size:18px; margin-bottom:8px; font-weight:bold;">' + device.name + '</div>' +
+                    '<div style="font-size:13px; opacity:0.9; line-height:1.4;">' +
+                    'MAC: ' + device.address + '<br>' +
+                    'Signal: ' + device.rssi + 'dBm<br>' +
+                    'UUID: <span style="color: #89CFF0;">' + device.uuid + '</span><br>' +
+                    'Status: <span style="color:#32ff32;">READY TO EXPLOIT</span>' +
+                    '</div>';
+                
+                buttons.appendChild(btn);
+                console.log('Button added to DOM');
+            });
+            
+            console.log('showTargets completed - buttons created:', buttons.children.length);
+            addLog('TARGETS DISPLAYED: ' + devices.length + ' robots ready', 'success');
+        }
+        
+        function selectDevice(device) {
+            console.log('=== TARGET SELECTION ===');
+            console.log('selectDevice called with:', device);
+            console.log('Device name:', device.name);
+            console.log('Device address:', device.address);
+            console.log('Device UUID:', device.uuid);
+            
+            addLog('TARGET SELECTED: ' + device.name + ' [' + device.address + ']', 'detection');
+            if (device.uuid && device.uuid !== 'N/A') {
+                addLog('└─ Selected UUID: ' + device.uuid, 'uuid');
+            }
+            selectedDevice = device;
+            console.log('selectedDevice set to:', selectedDevice);
+            
+            // Update selected target display
+            const targetDisplay = document.getElementById('selectedTarget');
+            console.log('Updating target display element');
+            
+            targetDisplay.innerHTML = 
+                '<strong>SELECTED TARGET:</strong><br>' +
+                'Model: ' + device.name + '<br>' +
+                'Address: ' + device.address + '<br>' +
+                'Signal: ' + device.rssi + 'dBm<br>' +
+                'UUID: <span style="color: #89CFF0;">' + device.uuid + '</span>';
+            
+            targetDisplay.style.borderColor = '#32ff32';
+            targetDisplay.style.backgroundColor = 'rgba(50, 255, 50, 0.1)';
+            targetDisplay.style.color = '#32ff32';
+            
+            // Enable attack buttons
+            const autoPwnBtn = document.getElementById('autoPwnButton');
+            console.log('Enabling AutoPwn button');
+            autoPwnBtn.disabled = false;
+            autoPwnBtn.textContent = 'START AUTOPWN ON ' + device.name.toUpperCase();
+            autoPwnBtn.style.background = 'linear-gradient(45deg, #32ff32, #69ff69)';
+            
+            addLog('Target ready for exploitation: ' + device.name, 'success');
+            addLog('AutoPwn button enabled for: ' + device.address, 'info');
+            console.log('=== TARGET SELECTION COMPLETE ===');
+        }
+        
+        // Remove this overcomplicated function - replaced with simple showTargets()
 
         function displayDevices(devices) {
+            console.log('displayDevices called with:', devices);
+            addLog('displayDevices called with ' + devices.length + ' devices', 'info');
+            
             const deviceList = document.getElementById('deviceList');
             const targetsFound = document.getElementById('targetsFound');
             
@@ -498,29 +895,27 @@ const char* webPageHTML = R"rawliteral(
                 }
                 
                 if (selectedIndex >= 0 && selectedIndex < devices.length) {
-                    selectDevice(selectedIndex, devices[selectedIndex].address, devices[selectedIndex].name);
+                    selectDevice(devices[selectedIndex]);
                 }
             };
         }
 
-        function selectDevice(index, address, name) {
-            selectedDevice = { index, address, name };
-            const model = name ? name.replace('Unitree_', '') : 'Unknown';
-            document.getElementById('selectedTarget').innerHTML = '<span style="color: #32ff32;">SELECTED TARGET: ' + model + ' (' + address + ')</span>';
-            addLog('=== TARGET SELECTED ===', 'success');
-            addLog('Model: ' + model, 'info');
-            addLog('Address: ' + address, 'info');
-            addLog('Ready for AutoPwn exploitation', 'success');
-        }
+        // REMOVED: Duplicate selectDevice function - using the main one above
         
         function toggleScan() {
             if (isScanning) {
-                // Immediate stop - don't wait for any async operations
+                // Stop continuous scanning
                 isScanning = false;
+                
+                if (continuousTimer) {
+                    clearTimeout(continuousTimer);
+                    continuousTimer = null;
+                }
+                
                 document.getElementById('scanButton').textContent = 'Start BLE Scan';
                 document.getElementById('scanIndicator').style.display = 'none';
                 document.getElementById('deviceList').value = 'Scanning stopped by user';
-                addLog('BLE scanning stopped by user', 'info');
+                addLog('CONTINUOUS SCANNING STOPPED by user', 'info');
                 
                 // Clean up any intervals/timeouts
                 if (scanInterval) {
@@ -528,7 +923,9 @@ const char* webPageHTML = R"rawliteral(
                     scanInterval = null;
                 }
             } else {
-                startScan();
+                // Always start continuous scanning
+                startContinuousScanning();
+                document.getElementById('scanButton').textContent = 'Stop Scanning';
             }
         }
         
@@ -1064,14 +1461,127 @@ const char* webPageHTML = R"rawliteral(
             });
         }
 
+        function saveHardwareSettings() {
+            const buzzerEnabled = document.getElementById('buzzerEnabled').checked;
+            const ledEnabled = document.getElementById('ledEnabled').checked;
+            
+            addLog('Saving hardware settings...', 'info');
+            
+            // Save both settings
+            Promise.all([
+                fetch('/toggle', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: 'setting=buzzer&value=' + (buzzerEnabled ? '1' : '0')
+                }),
+                fetch('/toggle', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: 'setting=led&value=' + (ledEnabled ? '1' : '0')
+                })
+            ])
+            .then(responses => {
+                addLog('Hardware settings saved successfully', 'success');
+                addLog('Buzzer: ' + (buzzerEnabled ? 'enabled' : 'disabled'), 'info');
+                addLog('LED: ' + (ledEnabled ? 'enabled' : 'disabled'), 'info');
+            })
+            .catch(error => {
+                addLog('Failed to save hardware settings: ' + error, 'error');
+            });
+        }
+
+        // Continuous scanning is now always enabled - no toggle needed
+        
+        function startContinuousScanning() {
+            if (!isScanning) {
+                isScanning = true;
+            }
+            
+            addLog('CONTINUOUS SCANNING: Starting 30-second cycle', 'ble');
+            scanDevices();
+            
+            // Schedule next scan in 30 seconds
+            continuousTimer = setTimeout(() => {
+                if (isScanning) {
+                    addLog('CONTINUOUS SCAN: Next 30-second cycle starting', 'scan');
+                    startContinuousScanning();
+                }
+            }, 30000); // 30 seconds
+        }
+
         // Initialize on load
         document.addEventListener('DOMContentLoaded', function() {
-            // Page loaded, get system info
+            // Page loaded, get system info (DON'T clear targets on refresh)
             
             addLog('OUI Spy UniPwn Edition - Based on github.com/Bin4ry/UniPwn research', 'info');
             addLog('Ready for Unitree robot BLE exploitation', 'info');
+            addLog('Page loaded - targets persist on refresh', 'info');
             getSystemInfo();
             setInterval(getSystemInfo, 10000);
+
+            // Always-on lightweight background polling to catch FIRST detections instantly
+            if (!backgroundPoll) {
+                backgroundPoll = setInterval(() => {
+                    fetch('/poll')
+                        .then(r => r.json())
+                        .then(data => {
+                            console.log('Background poll data:', data);
+                            if (data && data.devices && data.devices.length > 0) {
+                                console.log('Immediate update: Populating targets with', data.devices.length, 'devices');
+                                
+                                // Hot pink detection logging for background discoveries
+                                data.devices.forEach((device, index) => {
+                                    addLog('BACKGROUND DETECT: ' + device.name + ' [' + device.address + '] RSSI: ' + device.rssi + 'dBm', 'detection');
+                                    if (device.uuid && device.uuid !== 'N/A') {
+                                        addLog('└─ UUID: ' + device.uuid, 'uuid');
+                                    }
+                                });
+                                
+                                showTargets(data.devices);
+                            }
+                        })
+                        .catch(() => console.log('Poll failed'));
+                }, 100);  // Boosted to 100ms for immediate first detection
+            }
+            
+            // Serial log mirroring - fetch and display serial output in operations log
+            setInterval(() => {
+                fetch('/serial')
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success && data.serial) {
+                            const logOutput = document.getElementById('logOutput');
+                            const lines = data.serial.split('\\\\n').filter(line => line.trim());
+                            
+                            // Process each line with color coding
+                            lines.forEach(line => {
+                                if (line.trim() === '') return;
+                                
+                                let logType = 'serial';
+                                let timestamp = new Date().toLocaleTimeString();
+                                
+                                // Determine log type based on content for color coding
+                                if (line.includes('TARGET DETECTED') || line.includes('Found:')) {
+                                    logType = 'detection';
+                                } else if (line.includes('BLE Device:') || line.includes('Scanning for')) {
+                                    logType = 'ble';
+                                } else if (line.includes('UUID')) {
+                                    logType = 'uuid';
+                                } else if (line.includes('[WEB]')) {
+                                    logType = 'web';
+                                } else if (line.includes('ERROR') || line.includes('FAILED')) {
+                                    logType = 'error';
+                                }
+                                
+                                // Add to log with proper formatting
+                                logOutput.value += timestamp + ' [SERIAL] ' + line + '\\n';
+                            });
+                            
+                            logOutput.scrollTop = logOutput.scrollHeight;
+                        }
+                    })
+                    .catch(() => console.log('Serial fetch failed'));
+            }, 1000);  // Fetch serial logs every second
         });
     </script>
 </body>
@@ -1085,31 +1595,67 @@ void setASCIIBackground() {
 
 void handleRoot() {
     String fullHTML = String(webPageHTML);
-    fullHTML.replace("<div class=\"ascii-background\"></div>", 
-                     "<div class=\"ascii-background\">" + getASCIIArt() + "</div>");
+    // ASCII background disabled. You can re-enable by injecting getASCIIArt() into the background div.
+    fullHTML.replace("<div class=\"ascii-background\"></div>", "<div class=\"ascii-background\"></div>");
     webServer.send(200, "text/html", fullHTML);
 }
 
 void handleScan() {
-    Serial.println("[WEB] BLE scan requested");
+    Serial.println("\n[WEB] ═══ BLE SCAN REQUESTED ═══");
     
     // Start actual BLE scan
     scanForDevices();
     
+    // Wait a moment for scan to complete
+    delay(100);
+    
     // Build JSON response with real discovered devices
     String json = "{\"success\": true, \"devices\": [";
+    
+    Serial.println("[WEB] └─ Found: " + String(discoveredDevices.size()) + " Unitree devices");
     
     for (int i = 0; i < discoveredDevices.size(); i++) {
         if (i > 0) json += ",";
         json += "{";
         json += "\"address\": \"" + discoveredDevices[i].address + "\",";
         json += "\"name\": \"" + discoveredDevices[i].name + "\",";
-        json += "\"rssi\": " + String(discoveredDevices[i].rssi);
+        json += "\"rssi\": " + String(discoveredDevices[i].rssi) + ",";
+        json += "\"uuid\": \"" + discoveredDevices[i].uuid + "\"";
         json += "}";
+        // Hot pink highlighting for detected devices
+        Serial.print("\033[1;95m[WEB]    " + String(i+1) + ". " + discoveredDevices[i].name + " [" + discoveredDevices[i].address + "] RSSI: " + String(discoveredDevices[i].rssi) + "dBm\033[0m");
+        Serial.println();
     }
     
     json += "]}";
+    
+    Serial.println("[WEB] └─ Response sent to web interface\n");
     webServer.send(200, "application/json", json);
+}
+
+void handlePoll() {
+    // Real-time polling endpoint for immediate updates
+    if (realtimeUpdateAvailable) {
+        Serial.println("[WEB] Real-time update sent");
+        webServer.send(200, "application/json", lastRealtimeUpdate);
+        realtimeUpdateAvailable = false;
+    } else {
+        // Send current discovered devices
+        String json = "{\"success\": true, \"devices\": [";
+        
+        for (int i = 0; i < discoveredDevices.size(); i++) {
+            if (i > 0) json += ",";
+            json += "{";
+            json += "\"address\": \"" + discoveredDevices[i].address + "\",";
+            json += "\"name\": \"" + discoveredDevices[i].name + "\",";
+            json += "\"rssi\": " + String(discoveredDevices[i].rssi) + ",";
+            json += "\"uuid\": \"" + discoveredDevices[i].uuid + "\"";
+            json += "}";
+        }
+        
+        json += "]}";
+        webServer.send(200, "application/json", json);
+    }
 }
 
 void handleExploit() {
@@ -1119,7 +1665,8 @@ void handleExploit() {
     }
     
     String body = webServer.arg("plain");
-    Serial.println("[WEB] Exploit request: " + body);
+    Serial.println("\n[WEB] ═══ EXPLOIT REQUEST ═══");
+    Serial.println("[WEB] Payload: " + body.substring(0, 100) + (body.length() > 100 ? "..." : ""));
     
     // Parse JSON request
     DynamicJsonDocument requestDoc(1024);
@@ -1129,9 +1676,9 @@ void handleExploit() {
     String command = requestDoc["command"];
     String method = requestDoc["method"];
     
-    Serial.println("[WEB] Target: " + targetAddress);
-    Serial.println("[WEB] Command: " + command);
-    Serial.println("[WEB] Method: " + method);
+    Serial.println("[WEB] ├─ Target: " + targetAddress);
+    Serial.println("[WEB] ├─ Command: " + command.substring(0, 50) + (command.length() > 50 ? "..." : ""));
+    Serial.println("[WEB] └─ Method: " + method);
     
     // Find target device in discovered list
     int targetIndex = -1;
@@ -1179,6 +1726,11 @@ void handleStatus() {
     json += "\"bleStatus\":\"" + String(BLEDevice::getInitialized() ? "Active" : "Inactive") + "\",";
     json += "\"devicesFound\":" + String(discoveredDevices.size());
     json += "}";
+    webServer.send(200, "application/json", json);
+}
+
+void handleSerial() {
+    String json = "{\"success\": true, \"serial\": \"" + serialLogBuffer + "\"}";
     webServer.send(200, "application/json", json);
 }
 
@@ -1234,6 +1786,82 @@ void handleToggle() {
     }
 }
 
+// Function to mirror serial output to web operations log
+void mirrorSerialToWeb(const String& message) {
+    if (skipMenuOutput) {
+        // Skip menu-related output
+        if (message.indexOf("=== OUI Spy UniPwn Menu ===") != -1 ||
+            message.indexOf("1. Use web app") != -1 ||
+            message.indexOf("2. Show recent") != -1 ||
+            message.indexOf("3. Connect and") != -1 ||
+            message.indexOf("4. Toggle verbose") != -1 ||
+            message.indexOf("5. Show attack") != -1 ||
+            message.indexOf("6. System information") != -1 ||
+            message.indexOf("7. Web interface") != -1 ||
+            message.indexOf("8. Toggle buzzer") != -1 ||
+            message.indexOf("9. Toggle LED") != -1 ||
+            message.indexOf("Enter choice:") != -1) {
+            return;
+        }
+        
+        // Stop skipping after first scan or BLE activity
+        if (message.indexOf("Scanning for") != -1 || 
+            message.indexOf("BLE Device:") != -1 ||
+            message.indexOf("Found:") != -1) {
+            skipMenuOutput = false;
+        }
+    }
+    
+    // Clean message (remove ANSI escape codes)
+    String cleanMessage = message;
+    cleanMessage.replace("\033[1;95m", "");  // Remove hot pink
+    cleanMessage.replace("\033[0m", "");     // Remove reset
+    cleanMessage.replace("\033[41;1;37m", ""); // Remove red background
+    cleanMessage.replace("\033[32m", "");    // Remove green
+    cleanMessage.replace("\033[31m", "");    // Remove red
+    
+    // Add to serial log buffer with proper formatting
+    serialLogBuffer += cleanMessage + "\\n";  // Double backslash for JavaScript
+    
+    // Keep buffer manageable (last 100 lines for more context)
+    int lineCount = 0;
+    for (int i = serialLogBuffer.length() - 1; i >= 0; i--) {
+        if (serialLogBuffer.substring(i, i+2) == "\\n") {
+            lineCount++;
+            if (lineCount > 100) {
+                serialLogBuffer = serialLogBuffer.substring(i + 2);
+                break;
+            }
+        }
+    }
+}
+
+// Real-time target notification for immediate UI updates
+void notifyWebInterfaceNewTarget(const UnitreeDevice& device) {
+    // Hot pink highlighting for immediate detection
+    Serial.println("\n\033[1;95m[WEB] TARGET DETECTED: " + device.name + " [" + device.address + "] (" + String(device.rssi) + "dBm)\033[0m");
+    
+    // Send immediate JSON update with current discovered devices
+    String json = "{\"success\": true, \"realtime\": true, \"devices\": [";
+    
+    for (int i = 0; i < discoveredDevices.size(); i++) {
+        if (i > 0) json += ",";
+        json += "{";
+        json += "\"address\": \"" + discoveredDevices[i].address + "\",";
+        json += "\"name\": \"" + discoveredDevices[i].name + "\",";
+        json += "\"rssi\": " + String(discoveredDevices[i].rssi) + ",";
+        json += "\"uuid\": \"" + discoveredDevices[i].uuid + "\"";
+        json += "}";
+    }
+    
+    json += "]}";
+    
+    Serial.println("[WEB] └─ Real-time notification sent to web UI");
+    // Store this for any pending web requests
+    lastRealtimeUpdate = json;
+    realtimeUpdateAvailable = true;
+}
+
 void setupWebInterface() {
     // Set up access point
     WiFi.mode(WIFI_AP);
@@ -1245,6 +1873,8 @@ void setupWebInterface() {
     // Setup web server routes
     webServer.on("/", handleRoot);
     webServer.on("/scan", HTTP_POST, handleScan);
+    webServer.on("/poll", HTTP_GET, handlePoll);  // Real-time polling endpoint
+    webServer.on("/serial", HTTP_GET, handleSerial);  // Serial debug logs endpoint
     webServer.on("/exploit", HTTP_POST, handleExploit);
     webServer.on("/status", handleStatus);
     webServer.on("/toggle", HTTP_POST, handleToggle);
@@ -1253,11 +1883,13 @@ void setupWebInterface() {
     // Start web server
     webServer.begin();
     
-    Serial.println("=== OUI SPY UNIPWN WEB INTERFACE ACTIVE ===");
-    Serial.println("SSID: " + String(WIFI_AP_SSID));
-    Serial.println("Password: " + String(WIFI_AP_PASSWORD));
-    Serial.println("URL: http://192.168.4.1");
-    Serial.println("===========================================");
+    Serial.println("\n╔═══════════════════════════════════════════╗");
+    Serial.println("║       WEB INTERFACE ACTIVE & READY       ║");
+    Serial.println("╠═══════════════════════════════════════════╣");
+    Serial.println("║ SSID: " + String(WIFI_AP_SSID).substring(0, 32) + String(32 - String(WIFI_AP_SSID).length(), ' ') + " ║");
+    Serial.println("║ Password: " + String(WIFI_AP_PASSWORD) + String(24 - String(WIFI_AP_PASSWORD).length(), ' ') + " ║");
+    Serial.println("║ URL: http://192.168.4.1" + String(18, ' ') + " ║");
+    Serial.println("╚═══════════════════════════════════════════╝\n");
 }
 
 void handleWebInterface() {

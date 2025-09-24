@@ -52,6 +52,45 @@ void tripleBeep() {
     }
 }
 
+void bootBeep() {
+    if (!buzzerEnabled) return;
+    // Single beep at boot
+    singleBeep();
+}
+
+void scanningBeeps() {
+    if (!buzzerEnabled) return;
+    // 2 ascending beeps at scanning start
+    ledcChangeFrequency(BUZZER_PIN, 1500, 8);  // Lower tone
+    ledcWrite(BUZZER_PIN, BUZZER_DUTY);
+    delay(BEEP_DURATION);
+    ledcWrite(BUZZER_PIN, 0);
+    delay(BEEP_PAUSE);
+    
+    ledcChangeFrequency(BUZZER_PIN, 2000, 8);  // Higher tone
+    ledcWrite(BUZZER_PIN, BUZZER_DUTY);
+    delay(BEEP_DURATION);
+    ledcWrite(BUZZER_PIN, 0);
+    
+    // Reset to default frequency
+    ledcChangeFrequency(BUZZER_PIN, BUZZER_FREQ, 8);
+    
+    // Pause 2 seconds before detections can occur
+    delay(2000);
+}
+
+void heartbeatBeeps() {
+    if (!buzzerEnabled) return;
+    // 2 intermittent beeps like a heartbeat for device still around
+    ledcWrite(BUZZER_PIN, BUZZER_DUTY);
+    delay(100);  // Short beep
+    ledcWrite(BUZZER_PIN, 0);
+    delay(100);  // Short pause
+    ledcWrite(BUZZER_PIN, BUZZER_DUTY);
+    delay(150);  // Slightly longer beep
+    ledcWrite(BUZZER_PIN, 0);
+}
+
 void ascendingBeeps() {
     if (!buzzerEnabled) return;
     // Ready signal - 2 fast ascending beeps with close melodic notes
