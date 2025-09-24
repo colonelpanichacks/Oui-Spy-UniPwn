@@ -68,6 +68,7 @@ struct UnitreeDevice {
     String name;
     int rssi;
     unsigned long lastSeen;
+    String uuid;  // New field for service UUID
 };
 
 // Global variables
@@ -77,7 +78,7 @@ BLEClient* pClient = nullptr;
 BLERemoteCharacteristic* pWriteChar = nullptr;
 BLERemoteCharacteristic* pNotifyChar = nullptr;
 bool deviceConnected = false;
-bool verbose = false;
+bool verbose = true;
 std::vector<uint8_t> receivedNotification;
 bool notificationReceived = false;
 std::map<uint8_t, std::vector<uint8_t>> serialChunks;
@@ -138,6 +139,11 @@ void setup() {
     // Initialize BLE
     BLEDevice::init("ESP32-UniPwn");
     
+    // Ensure BLE scanning is stopped at boot
+    BLEScan* pBLEScan = BLEDevice::getScan();
+    pBLEScan->stop();
+    pBLEScan->clearResults();
+    
     // Display banner with red background for pentesting theme
     Serial.println("\n\033[41;1;37m");  // Red background, bold white text
     Serial.println("+=======================================+");
@@ -153,6 +159,8 @@ void setup() {
     // Initialize hardware feedback system
 #if ENABLE_BUZZER || ENABLE_LED_FEEDBACK
     initializeHardwareFeedback();
+    // Single beep at boot
+    bootBeep();
 #endif
     
 #if ENABLE_WEB_INTERFACE
@@ -181,6 +189,13 @@ void styledPrint(const String& message, bool verboseOnly) {
     if (verboseOnly && !verbose) return;
     Serial.print("\033[1;32m[//]\033[0m ");
     Serial.println(message);
+    
+    #if ENABLE_WEB_INTERFACE
+    // Mirror to web operations log
+    extern void mirrorSerialToWeb(const String& message);
+    String fullMessage = "[//] " + message;
+    mirrorSerialToWeb(fullMessage);
+    #endif
 }
 
 String buildPwn(const String& cmd) {
@@ -281,7 +296,7 @@ bool genericResponseValidator(const std::vector<uint8_t>& response, uint8_t expe
 
 void displayMenu() {
     Serial.println("\n\033[41;1;37m=== OUI Spy UniPwn Menu ===\033[0m");
-    Serial.println("1. Scan for Unitree robots");
+    Serial.println("1. Use web app to start scanning");
     Serial.println("2. Show recent targets");
     Serial.println("3. Connect and exploit target");
     Serial.println("4. Toggle verbose mode (current: " + String(verbose ? "ON" : "OFF") + ")");
@@ -302,7 +317,7 @@ void displayMenu() {
 void handleMenuChoice(int choice) {
     switch (choice) {
         case 1:
-            scanForDevices();
+            styledPrint("Scanning disabled from serial. Use web app at http://192.168.4.1");
             break;
         case 2:
             showRecentDevices();
@@ -346,6 +361,11 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice advertisedDevice) {
         String deviceName = advertisedDevice.getName().c_str();
         
+        // Debug: Show all BLE devices in verbose mode
+        if (verbose && deviceName.length() > 0) {
+            styledPrint("BLE Device: " + deviceName + " (" + advertisedDevice.getAddress().toString().c_str() + ") RSSI: " + String(advertisedDevice.getRSSI()));
+        }
+        
         // Check if it's a Unitree device
         if (deviceName.startsWith("G1_") || deviceName.startsWith("Go2_") || 
             deviceName.startsWith("B2_") || deviceName.startsWith("H1_") || 
@@ -356,6 +376,37 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             device.name = deviceName;
             device.rssi = advertisedDevice.getRSSI();
             device.lastSeen = millis();
+            // Capture all available UUIDs from BLE advertisement
+            String allUUIDs = "";
+            
+            // Method 1: Primary service UUID
+            if (advertisedDevice.haveServiceUUID()) {
+                allUUIDs = advertisedDevice.getServiceUUID().toString().c_str();
+            }
+            
+            // Method 2: Service data UUIDs
+            if (advertisedDevice.getServiceDataCount() > 0) {
+                for (int i = 0; i < advertisedDevice.getServiceDataCount(); i++) {
+                    String serviceUUID = advertisedDevice.getServiceDataUUID(i).toString().c_str();
+                    if (allUUIDs.length() == 0) {
+                        allUUIDs = serviceUUID;
+                    } else if (allUUIDs.indexOf(serviceUUID) == -1) {  // Avoid duplicates
+                        allUUIDs += ", " + serviceUUID;
+                    }
+                }
+            }
+            
+            // Method 3: Try to get payload length info (getPayload returns uint8_t*)
+            size_t payloadLength = advertisedDevice.getPayloadLength();
+            if (payloadLength > 0 && allUUIDs.length() == 0) {
+                allUUIDs = "RAW_DATA_" + String(payloadLength) + "_BYTES";
+            }
+            
+            if (allUUIDs.length() == 0) {
+                allUUIDs = "NO_SERVICES";
+            }
+            
+            device.uuid = allUUIDs;
             
             // Check if already in list
             bool found = false;
@@ -363,6 +414,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
                 if (d.address == device.address) {
                     d.rssi = device.rssi;  // Update RSSI
                     d.lastSeen = device.lastSeen;
+                    d.name = deviceName;  // Update name in case it changed
                     found = true;
                     break;
                 }
@@ -372,10 +424,41 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
                 discoveredDevices.push_back(device);
                 styledPrint("Found: " + device.name + " (" + device.address + ") RSSI: " + String(device.rssi));
                 
+            // Log detailed UUID information
+            styledPrint("UUID Debug: haveServiceUUID=" + String(advertisedDevice.haveServiceUUID() ? "YES" : "NO"));
+            if (advertisedDevice.haveServiceUUID()) {
+                styledPrint("Primary UUID: " + String(advertisedDevice.getServiceUUID().toString().c_str()));
+            }
+            styledPrint("Service Data Count: " + String(advertisedDevice.getServiceDataCount()));
+            if (advertisedDevice.haveManufacturerData()) {
+                styledPrint("Manufacturer Data: YES (length=" + String(advertisedDevice.getManufacturerData().length()) + ")");
+            }
+            if (advertisedDevice.haveTXPower()) {
+                styledPrint("TX Power: " + String(advertisedDevice.getTXPower()));
+            }
+            styledPrint("Final UUIDs: " + device.uuid);
+                
                 // Bot detection feedback - 3 fast beeps and LED pattern
 #if ENABLE_BUZZER || ENABLE_LED_FEEDBACK
                 feedbackBotDetection();
 #endif
+
+                // IMMEDIATE web interface update when robot is detected
+#if ENABLE_WEB_INTERFACE
+                notifyWebInterfaceNewTarget(device);
+#endif
+            } else {
+                // Skip serial print for updates to avoid "double detection" feel
+                // styledPrint("Updated: " + deviceName + " (" + device.address + ") RSSI: " + String(device.rssi));
+                
+                // Heartbeat beeps for device still around (but not too frequently)
+                static unsigned long lastHeartbeatTime = 0;
+                if (millis() - lastHeartbeatTime > 5000) {  // Every 5 seconds max
+#if ENABLE_BUZZER
+                    heartbeatBeeps();
+#endif
+                    lastHeartbeatTime = millis();
+                }
             }
         }
     }
@@ -384,6 +467,11 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
 void scanForDevices() {
     styledPrint("Scanning for Unitree devices...");
     discoveredDevices.clear();
+    
+    // 2 ascending beeps at scanning start, pause 2 seconds
+#if ENABLE_BUZZER
+    scanningBeeps();
+#endif
     
     BLEScan* pBLEScan = BLEDevice::getScan();
     pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
@@ -395,6 +483,11 @@ void scanForDevices() {
     pBLEScan->clearResults();
     
     styledPrint("Scan complete. Found " + String(discoveredDevices.size()) + " Unitree devices");
+    
+    // Debug: Print all discovered devices
+    for (int i = 0; i < discoveredDevices.size(); i++) {
+        styledPrint("Device " + String(i) + ": " + discoveredDevices[i].name + " (" + discoveredDevices[i].address + ") RSSI: " + String(discoveredDevices[i].rssi));
+    }
 }
 
 void showRecentDevices() {
@@ -437,7 +530,7 @@ void showSystemInfo() {
 
 #if ENABLE_WEB_INTERFACE
 void showWebInterfaceInfo() {
-    styledPrint("🌐 OUI Spy Web Interface Information:");
+    styledPrint("OUI Spy Web Interface Information:");
     Serial.println("  Status: ACTIVE");
     Serial.println("  SSID: " + String(WIFI_AP_SSID) + WiFi.macAddress().substring(9));
     Serial.println("  Password: " + String(WIFI_AP_PASSWORD));
