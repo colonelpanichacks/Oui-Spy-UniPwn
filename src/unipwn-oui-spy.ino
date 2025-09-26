@@ -170,10 +170,7 @@ void setup() {
     Serial.println("| Unitree Robot BLE Exploit Platform   |");
     Serial.println("| Go2, G1, H1, B2 Series Support       |");
     Serial.println("+=======================================+");
-    Serial.println("\033[0m\033[1;31m");  // Reset background, keep red text
-    Serial.println("  Based on: github.com/Bin4ry/UniPwn");
-    Serial.println("  Research by Bin4ry & h0stile - 2025");
-    Serial.println("\033[0m");
+    Serial.println("");
     
     // Initialize hardware feedback system
 #if ENABLE_BUZZER || ENABLE_LED_FEEDBACK
@@ -186,7 +183,21 @@ void setup() {
     setupWebInterface();
 #endif
     
-    displayMenu();
+    // Startup message
+    delay(500); // Let serial stabilize
+    Serial.println("");
+    Serial.println("+=======================================+");
+    Serial.println("|   OUI Spy - UniPwn Edition           |");
+    Serial.println("| Unitree Robot BLE Exploit Platform   |");
+    Serial.println("| Go2, G1, H1, B2 Series Support       |");
+    Serial.println("+=======================================+");
+    Serial.println("");
+    Serial.println("Based on: github.com/Bin4ry/UniPwn");
+    Serial.println("Research by Bin4ry and d0tslash/kevin finnistaire - 2024");
+    Serial.println("");
+    Serial.println("WiFi: UniPwn (password: unipwn123)");
+    Serial.println("Web: http://192.168.4.1");
+    Serial.println("");
 }
 
 void loop() {
@@ -213,7 +224,6 @@ void loop() {
         int choice = Serial.parseInt();
         if (choice > 0) {
             handleMenuChoice(choice);
-            displayMenu();
         }
     }
     delay(10);
@@ -454,20 +464,27 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
         int rssi = advertisedDevice.getRSSI();
         
         // Show ALL BLE devices in operations log (not just verbose mode)
+        // Use char buffer to avoid String fragmentation during BLE scanning
+        char bleMsg[150];
         if (deviceName.length() > 0) {
-            infoPrint("BLE DEVICE: " + deviceName + " (" + deviceAddress + ") RSSI: " + String(rssi) + " dBm");
+            snprintf(bleMsg, sizeof(bleMsg), "BLE DEVICE: %s (%s) RSSI: %d dBm", 
+                    deviceName.c_str(), deviceAddress.c_str(), rssi);
         } else {
-            // Show unnamed devices too
-            infoPrint("BLE DEVICE: [UNNAMED] (" + deviceAddress + ") RSSI: " + String(rssi) + " dBm");
+            snprintf(bleMsg, sizeof(bleMsg), "BLE DEVICE: [UNNAMED] (%s) RSSI: %d dBm", 
+                    deviceAddress.c_str(), rssi);
         }
+        infoPrint(String(bleMsg));
         
         // Check if it's a Unitree device
         if (deviceName.startsWith("G1_") || deviceName.startsWith("Go2_") || 
             deviceName.startsWith("B2_") || deviceName.startsWith("H1_") || 
             deviceName.startsWith("X1_")) {
             
-            // IMMEDIATE detection print - this happens instantly!
-            successPrint("*** UNITREE TARGET DETECTED ***: " + deviceName + " (" + deviceAddress + ") RSSI: " + String(rssi) + " dBm");
+            // IMMEDIATE detection print - use char buffer to avoid String fragmentation
+            char targetMsg[200];
+            snprintf(targetMsg, sizeof(targetMsg), "*** UNITREE TARGET DETECTED ***: %s (%s) RSSI: %d dBm", 
+                    deviceName.c_str(), deviceAddress.c_str(), rssi);
+            successPrint(String(targetMsg));
             
 #if ENABLE_WEB_INTERFACE
             // IMMEDIATE web UI update - don't wait for full processing!
