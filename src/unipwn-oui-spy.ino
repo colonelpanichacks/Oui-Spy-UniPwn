@@ -33,6 +33,11 @@
 // CHUNK_SIZE is now defined in config.h
 #define MAX_RECENT_DEVICES 5
 
+// Continuous scanning variables
+bool continuousScanning = false;
+unsigned long lastScanTime = 0;
+const unsigned long CONTINUOUS_SCAN_INTERVAL = 1500; // 1.5 seconds between scans
+
 // Hardcoded AES parameters (from reverse engineering)
 const uint8_t AES_KEY[16] = {
     0xdf, 0x98, 0xb7, 0x15, 0xd5, 0xc6, 0xed, 0x2b,
@@ -106,6 +111,9 @@ std::vector<uint8_t> decryptData(const std::vector<uint8_t>& data);
 std::vector<uint8_t> createPacket(uint8_t instruction, const std::vector<uint8_t>& dataBytes = {});
 bool genericResponseValidator(const std::vector<uint8_t>& response, uint8_t expectedInstruction);
 void scanForDevices();
+void startContinuousScanning();
+void stopContinuousScanning();
+void performSingleScan();
 void displayMenu();
 void handleMenuChoice(int choice);
 bool connectToDevice(const UnitreeDevice& device);
@@ -185,6 +193,21 @@ void loop() {
 #if ENABLE_WEB_INTERFACE
     handleWebInterface();
 #endif
+    
+    // Handle continuous scanning
+    if (continuousScanning) {
+        unsigned long currentTime = millis();
+        if (currentTime - lastScanTime >= CONTINUOUS_SCAN_INTERVAL) {
+            infoPrint("Continuous scan cycle - searching for Unitree devices...");
+            performSingleScan();
+            lastScanTime = currentTime;
+            
+            // Print current device count
+            if (discoveredDevices.size() > 0) {
+                infoPrint("Found " + String(discoveredDevices.size()) + " Unitree device(s) so far");
+            }
+        }
+    }
     
     if (Serial.available()) {
         int choice = Serial.parseInt();
@@ -564,11 +587,49 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     }
 };
 
+void startContinuousScanning() {
+    infoPrint("Starting CONTINUOUS BLE scan for Unitree devices...");
+    infoPrint("Scan will continue until stopped via web interface");
+    continuousScanning = true;
+    discoveredDevices.clear();
+    lastScanTime = 0; // Force immediate first scan
+    
+#if ENABLE_BUZZER
+    scanningBeeps();
+#endif
+}
+
+void stopContinuousScanning() {
+    infoPrint("Stopping continuous BLE scan...");
+    continuousScanning = false;
+    
+    // Stop any active scan
+    BLEScan* pBLEScan = BLEDevice::getScan();
+    pBLEScan->stop();
+    pBLEScan->clearResults();
+    
+    successPrint("Continuous scanning stopped. Found " + String(discoveredDevices.size()) + " total Unitree target(s)");
+}
+
+void performSingleScan() {
+    if (!continuousScanning) return; // Safety check
+    
+    BLEScan* pBLEScan = BLEDevice::getScan();
+    pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
+    pBLEScan->setActiveScan(true);
+    pBLEScan->setInterval(100);
+    pBLEScan->setWindow(99);
+    
+    // Very short scan for continuous mode - 1 second
+    BLEScanResults* foundDevices = pBLEScan->start(1, false);
+    pBLEScan->clearResults();
+}
+
 void scanForDevices() {
+    // Legacy single scan for compatibility
     infoPrint("Starting BLE scan for Unitree devices...");
     discoveredDevices.clear();
     
-    // 2 ascending beeps at scanning start, pause 2 seconds
 #if ENABLE_BUZZER
     scanningBeeps();
 #endif
