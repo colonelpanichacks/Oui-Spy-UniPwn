@@ -19,6 +19,9 @@ extern std::vector<UnitreeDevice> discoveredDevices;
 extern bool executeCommand(const UnitreeDevice& device, const String& command);
 extern bool performHandshake(const UnitreeDevice& device);
 extern void scanForDevices();
+extern void startContinuousScanning();
+extern void stopContinuousScanning();
+extern bool continuousScanning;
 extern bool buzzerEnabled;
 extern bool ledEnabled;
 extern void saveConfiguration();
@@ -826,7 +829,8 @@ const char* webPageHTML = R"rawliteral(
             // Start dot animation
             let dotCount = 1;
             const dotAnimation = setInterval(() => {
-                if (!scanRunning) {
+                // CRITICAL FIX: Check isScanning flag instead of scanRunning
+                if (!isScanning) {
                     clearInterval(dotAnimation);
                     return;
                 }
@@ -843,6 +847,14 @@ const char* webPageHTML = R"rawliteral(
             
             // REAL-TIME polling every 100ms for INSTANT target detection
             realtimePoll = setInterval(() => {
+                // CRITICAL FIX: Check isScanning flag to stop polling when user stops
+                if (!isScanning) {
+                    clearInterval(realtimePoll);
+                    realtimePoll = null;
+                    scanRunning = false;
+                    return;
+                }
+                
                 fetch('/poll')
                     .then(response => response.json())
                     .then(data => {
@@ -870,13 +882,30 @@ const char* webPageHTML = R"rawliteral(
             fetch('/scan', { method: 'POST' })
                 .then(response => response.json())
                 .then(data => {
-                    // Keep polling for 10 more seconds after scan completes for stragglers
-                    setTimeout(() => {
-                        clearInterval(realtimePoll);
-                        scanRunning = false;
-                        addLog('SCAN CYCLE COMPLETE: ' + (data.devices ? data.devices.length : 0) + ' targets found', 'success');
-                        document.getElementById('scanStatus').innerHTML = '<span style="color: #32ff32;">Continuous Mode - ' + (data.devices ? data.devices.length : 0) + ' found (next scan in 30s)</span>';
-                    }, 10000);
+                    if (data.success && data.continuous) {
+                        addLog('BACKEND CONTINUOUS SCANNING: Active - polls every 1.5 seconds', 'success');
+                        document.getElementById('scanStatus').innerHTML = '<span style="color: #32ff32;">Scanning<span id="scanDots">.</span></span>';
+                        // Start dot animation if not already running
+                        if (!dotAnimation) {
+                            dotCount = 1;
+                            dotAnimation = setInterval(() => {
+                                dotCount = (dotCount % 3) + 1;
+                                const dots = '.'.repeat(dotCount);
+                                const dotsElement = document.getElementById('scanDots');
+                                if (dotsElement) {
+                                    dotsElement.textContent = dots;
+                                }
+                            }, 500);
+                        }
+                    } else {
+                        // Legacy single scan response
+                        setTimeout(() => {
+                            clearInterval(realtimePoll);
+                            scanRunning = false;
+                            addLog('SCAN CYCLE COMPLETE: ' + (data.devices ? data.devices.length : 0) + ' targets found', 'success');
+                            document.getElementById('scanStatus').innerHTML = '<span style="color: #32ff32;">Scan complete</span>';
+                        }, 10000);
+                    }
                 })
                 .catch(error => {
                     clearInterval(realtimePoll);
@@ -1075,28 +1104,53 @@ const char* webPageHTML = R"rawliteral(
         // REMOVED: Duplicate selectDevice function - using the main one above
         
         function toggleScan() {
-            if (isScanning) {
+            const buttonText = document.getElementById('scanButton').textContent;
+            
+            if (buttonText === 'Stop Scanning') {
                 // Stop continuous scanning
-                isScanning = false;
+                addLog('Scanning stopped', 'info');
                 
+                // Clear all frontend state immediately
+                isScanning = false;
+                scanRunning = false;
+                
+                // Clear all intervals
+                if (realtimePoll) {
+                    clearInterval(realtimePoll);
+                    realtimePoll = null;
+                }
                 if (continuousTimer) {
                     clearTimeout(continuousTimer);
                     continuousTimer = null;
                 }
-                
-                document.getElementById('scanButton').textContent = 'Start BLE Scan';
-                document.getElementById('scanIndicator').style.display = 'none';
-                document.getElementById('deviceList').value = 'Scanning stopped by user';
-                addLog('CONTINUOUS SCANNING STOPPED by user', 'info');
-                saveState(); // Persist scan state
-                
-                // Clean up any intervals/timeouts
                 if (scanInterval) {
                     clearTimeout(scanInterval);
                     scanInterval = null;
                 }
+                
+                // Update UI immediately
+                document.getElementById('scanButton').textContent = 'Start BLE Scan';
+                document.getElementById('scanStatus').innerHTML = '<span style="color: #cccccc;">Ready to scan</span>';
+                document.getElementById('deviceList').value = 'Scanning stopped by user';
+                
+                // Call backend to stop continuous scanning
+                fetch('/stop', { method: 'POST' })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success && data.devices) {
+                            updateDeviceList(data.devices);
+                        }
+                    })
+                    .catch(error => {
+                        addLog('Stop error: ' + error.message, 'error');
+                    });
+                
+                saveState();
+                
             } else {
-                // Always start continuous scanning
+                // Start continuous scanning
+                addLog('Starting BLE scan for Unitree robots...', 'info');
+                isScanning = true;
                 startContinuousScanning();
                 document.getElementById('scanButton').textContent = 'Stop Scanning';
             }
@@ -1760,17 +1814,27 @@ const char* webPageHTML = R"rawliteral(
         // Continuous scanning is now always enabled - no toggle needed
         
         function startContinuousScanning() {
-            if (!isScanning) {
-                isScanning = true;
-            }
-            
-            addLog('CONTINUOUS SCANNING: Started - will run until stopped', 'ble');
+            isScanning = true;
             scanDevices();
-            saveState(); // Persist scan state
-            
-            // No more 30-second cycles - just let it run continuously
-            // The scanDevices() function handles the continuous polling internally
+            saveState();
         }
+        
+        function loadHardwareSettings() {
+            fetch('/hardware')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // Set checkboxes based on ESP32 state
+                        document.getElementById('buzzerEnabled').checked = data.buzzer;
+                        document.getElementById('ledEnabled').checked = data.led;
+                        addLog('Hardware settings loaded: Buzzer ' + (data.buzzer ? 'ON' : 'OFF') + ', LED ' + (data.led ? 'ON' : 'OFF'), 'success');
+                    }
+                })
+                .catch(error => {
+                    addLog('Failed to load hardware settings: ' + error.message, 'error');
+                });
+        }
+        
 
         // Initialize on load
         // Global error handler
@@ -1815,6 +1879,9 @@ const char* webPageHTML = R"rawliteral(
             addLog('Real-time operations log active', 'success');
             getSystemInfo();
             setInterval(getSystemInfo, 10000);
+            
+            // Load hardware settings from ESP32
+            loadHardwareSettings();
 
             // Disable background pre-scan polling to avoid stale detections from prior sessions
             if (backgroundPoll) {
@@ -1881,16 +1948,27 @@ void handleRoot() {
 void handleScan() {
     Serial.println("\n[WEB] ═══ BLE SCAN REQUESTED ═══");
     
-    // Start actual BLE scan
-    scanForDevices();
+    // Start continuous BLE scan
+    startContinuousScanning();
     
     // Wait a moment for scan to complete
     delay(100);
     
-    // Build JSON response with real discovered devices
-    String json = "{\"success\": true, \"devices\": [";
+    // Build JSON response for continuous scanning start
+    String json = "{\"success\": true, \"continuous\": true, \"devices\": [], \"message\": \"Continuous scanning started\"}";
     
-    Serial.println("[WEB] └─ Found: " + String(discoveredDevices.size()) + " Unitree devices");
+    Serial.println("[WEB] └─ Response sent to web interface\n");
+    webServer.send(200, "application/json", json);
+}
+
+void handleStopScan() {
+    Serial.println("[WEB] Scan stopped");
+    
+    // Stop continuous scanning
+    stopContinuousScanning();
+    
+    // Build JSON response with final discovered devices
+    String json = "{\"success\": true, \"devices\": [";
     
     for (int i = 0; i < discoveredDevices.size(); i++) {
         if (i > 0) json += ",";
@@ -1900,14 +1978,10 @@ void handleScan() {
         json += "\"rssi\": " + String(discoveredDevices[i].rssi) + ",";
         json += "\"uuid\": \"" + discoveredDevices[i].uuid + "\"";
         json += "}";
-        // Hot pink highlighting for detected devices
-        Serial.print("\033[1;95m[WEB]    " + String(i+1) + ". " + discoveredDevices[i].name + " [" + discoveredDevices[i].address + "] RSSI: " + String(discoveredDevices[i].rssi) + "dBm\033[0m");
-        Serial.println();
     }
     
-    json += "]}";
+    json += "], \"message\": \"Scanning stopped\"}";
     
-    Serial.println("[WEB] └─ Response sent to web interface\n");
     webServer.send(200, "application/json", json);
 }
 
@@ -2040,6 +2114,13 @@ void handleSerial() {
 
 void handleNotFound() {
     webServer.send(404, "text/plain", "Page not found");
+}
+
+void handleHardware() {
+    // Return current hardware settings
+    String json = "{\"success\": true, \"buzzer\": " + String(buzzerEnabled ? "true" : "false") + 
+                  ", \"led\": " + String(ledEnabled ? "true" : "false") + "}";
+    webServer.send(200, "application/json", json);
 }
 
 void handleToggle() {
@@ -2195,6 +2276,7 @@ void setupWebInterface() {
     // Setup web server routes
     webServer.on("/", handleRoot);
     webServer.on("/scan", HTTP_POST, handleScan);
+    webServer.on("/stop", HTTP_POST, handleStopScan);
     webServer.on("/poll", HTTP_GET, handlePoll);  // Real-time polling endpoint
     webServer.on("/serial", HTTP_GET, handleSerial);  // Serial debug logs endpoint
     webServer.on("/exploit", HTTP_POST, handleExploit);
@@ -2219,6 +2301,7 @@ void setupWebInterface() {
     });
     webServer.on("/status", handleStatus);
     webServer.on("/toggle", HTTP_POST, handleToggle);
+    webServer.on("/hardware", HTTP_GET, handleHardware);
     webServer.onNotFound(handleNotFound);
     
     // Start web server
