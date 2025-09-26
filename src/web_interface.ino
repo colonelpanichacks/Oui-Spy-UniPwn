@@ -2307,13 +2307,7 @@ void setupWebInterface() {
     // Start web server
     webServer.begin();
     
-    Serial.println("\n╔═══════════════════════════════════════════╗");
-    Serial.println("║       WEB INTERFACE ACTIVE & READY       ║");
-    Serial.println("╠═══════════════════════════════════════════╣");
-    Serial.println("║ SSID: " + String(WIFI_AP_SSID).substring(0, 32) + String(32 - String(WIFI_AP_SSID).length(), ' ') + " ║");
-    Serial.println("║ Password: " + String(WIFI_AP_PASSWORD) + String(24 - String(WIFI_AP_PASSWORD).length(), ' ') + " ║");
-    Serial.println("║ URL: http://192.168.4.1" + String(18, ' ') + " ║");
-    Serial.println("╚═══════════════════════════════════════════╝\n");
+    // Web interface started (info shown in main startup message)
 }
 
 void handleWebInterface() {
