@@ -29,7 +29,6 @@ All credit for the vulnerability discovery, protocol analysis, and initial explo
 - **Custom Command Injection**: Manual exploitation with SSID/password injection methods
 
 ### Web Interface
-- **OUI Spy Design**: Modern glassmorphism UI with lime green to hot pink ASCII gradient
 - **Target Management**: Click-to-select discovered robots with detailed information
 - **Continuous Scanning**: Automated scanning with visual progress indicators
 - **Attack Vectors**: Pre-configured exploits (SSH enable, root access, system info)
@@ -37,17 +36,17 @@ All credit for the vulnerability discovery, protocol analysis, and initial explo
 - **System Monitoring**: Real-time heap, uptime, and network status
 
 ### AutoPwn Features
-- **Bulletproof Error Handling**: 3 retries per step with progressive backoff
+- **Error Handling**: 3 retries per step with progressive backoff
 - **Timeout Protection**: 10-second timeouts on all network operations
 - **Step Validation**: Each exploitation phase verified before proceeding
 - **Progress Tracking**: Real-time progress bar with detailed status updates
-- **Comprehensive Logging**: Complete forensic trail of exploitation attempts
+
 
 ### Hardware Platform
 - **ESP32-S3 Optimized**: Built for Seeed XIAO ESP32-S3 with PSRAM support
 - **Wireless AP Mode**: Creates isolated "unipwn" network for interface access
 - **Detailed Logging**: Comprehensive BLE scan results and exploitation status
-- **Responsive UI**: Instant feedback on all user interactions
+
 
 ## Technical Implementation
 
@@ -89,13 +88,6 @@ Based on the original UniPwn research, this tool exploits a command injection vu
 6. Use "START AUTOPWN" for automated exploitation
 7. Monitor operations log for detailed status updates
 
-### Manual Exploitation
-- **Enable SSH**: Activates SSH daemon on target robot
-- **Set Root Password**: Changes root password to known value
-- **Custom Commands**: Execute arbitrary Linux commands via injection
-- **System Information**: Extract robot configuration and status
-
-## Development Architecture
 
 ### Core Components
 - **BLE Stack**: ESP32 native BLE with custom Unitree protocol implementation
