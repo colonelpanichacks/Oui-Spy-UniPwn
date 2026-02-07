@@ -114,6 +114,20 @@ This tool implements published security research for educational and authorized 
 - **Security Research Community**: Responsible disclosure and knowledge sharing
 - **Unitree Robotics**: For building innovative robotic platforms
 
+## OUI-SPY Firmware Ecosystem
+
+UniPwn is part of the OUI-SPY firmware family:
+
+| Firmware | Description | Board |
+|----------|-------------|-------|
+| **[OUI-SPY Unified](https://github.com/colonelpanichacks/oui-spy-unified-blue)** | Multi-mode BLE + WiFi detector | ESP32-S3 / ESP32-C5 |
+| **[OUI-SPY Detector](https://github.com/colonelpanichacks/ouispy-detector)** | Targeted BLE scanner with OUI filtering | ESP32-S3 |
+| **[OUI-SPY Foxhunter](https://github.com/colonelpanichacks/ouispy-foxhunter)** | RSSI-based proximity tracker | ESP32-S3 |
+| **[Flock You](https://github.com/colonelpanichacks/flock-you)** | Flock Safety / Raven surveillance detection | ESP32-S3 |
+| **[Sky-Spy](https://github.com/colonelpanichacks/Sky-Spy)** | Drone Remote ID detection | ESP32-S3 / ESP32-C5 |
+| **[Remote-ID-Spoofer](https://github.com/colonelpanichacks/Remote-ID-Spoofer)** | WiFi Remote ID spoofer & simulator with swarm mode | ESP32-S3 |
+| **[OUI-SPY UniPwn](https://github.com/colonelpanichacks/Oui-Spy-UniPwn)** | Unitree robot exploitation system (this project) | ESP32-S3 |
+
 ## License
 
 This educational implementation is provided for security research and authorized testing purposes. Users are responsible for compliance with all applicable laws and regulations in their jurisdiction.
