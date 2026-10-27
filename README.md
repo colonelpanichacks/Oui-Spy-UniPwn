@@ -130,4 +130,6 @@ UniPwn is part of the OUI-SPY firmware family:
 
 ## License
 
+MIT, see [LICENSE](LICENSE), for this project's own code. It builds on [Bin4ry/UniPwn](https://github.com/Bin4ry/UniPwn), which publishes no software license; parts derived from it stay under its author's terms.
+
 This educational implementation is provided for security research and authorized testing purposes. Users are responsible for compliance with all applicable laws and regulations in their jurisdiction.
